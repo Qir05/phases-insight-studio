@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAuth } from '@/lib/auth';
 import { getServiceClient } from '@/lib/supabase';
 
 export async function PATCH(
   req: NextRequest,
   { params }: { params: { id: string; qid: string } }
 ) {
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
+
   const body = await req.json();
-  const db = getServiceClient();
+  const db   = getServiceClient();
 
   const { data, error } = await db
     .from('questions')
@@ -24,6 +28,9 @@ export async function DELETE(
   _req: NextRequest,
   { params }: { params: { id: string; qid: string } }
 ) {
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
+
   const db = getServiceClient();
   const { error } = await db
     .from('questions')

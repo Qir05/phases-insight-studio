@@ -1,10 +1,35 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAuth } from '@/lib/auth';
 import { getServiceClient } from '@/lib/supabase';
+
+async function assertToolAccess(
+  toolId: string,
+  role: string,
+  workspaceId: string | null
+): Promise<NextResponse | null> {
+  if (role === 'super_admin') return null;
+  const db = getServiceClient();
+  const { data: tool } = await db
+    .from('tools')
+    .select('workspace_id')
+    .eq('id', toolId)
+    .single();
+  if (!tool || tool.workspace_id !== workspaceId) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
+  return null;
+}
 
 export async function GET(
   _req: NextRequest,
   { params }: { params: { id: string } }
 ) {
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
+
+  const deny = await assertToolAccess(params.id, auth.profile.role, auth.profile.workspace_id);
+  if (deny) return deny;
+
   const db = getServiceClient();
   const { data, error } = await db
     .from('questions')
@@ -23,6 +48,12 @@ export async function POST(
   req: NextRequest,
   { params }: { params: { id: string } }
 ) {
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
+
+  const deny = await assertToolAccess(params.id, auth.profile.role, auth.profile.workspace_id);
+  if (deny) return deny;
+
   let body: Record<string, unknown>;
   try {
     body = await req.json();
@@ -38,7 +69,7 @@ export async function POST(
     required?: boolean;
   };
 
-  if (!label) return NextResponse.json({ error: 'label is required' }, { status: 400 });
+  if (!label)      return NextResponse.json({ error: 'label is required' }, { status: 400 });
   if (!field_type) return NextResponse.json({ error: 'field_type is required' }, { status: 400 });
 
   const VALID_TYPES = ['text', 'textarea', 'radio', 'checkbox', 'dropdown', 'number'];
@@ -51,7 +82,6 @@ export async function POST(
 
   const db = getServiceClient();
 
-  // Determine the next order_index
   const { data: existing, error: idxErr } = await db
     .from('questions')
     .select('order_index')
@@ -66,7 +96,6 @@ export async function POST(
 
   const nextIdx = existing && existing.length > 0 ? (existing[0].order_index ?? 0) + 1 : 0;
 
-  // Normalise options: only keep non-empty arrays for types that use them
   const OPTIONS_TYPES = ['radio', 'checkbox', 'dropdown'];
   const normalisedOptions =
     OPTIONS_TYPES.includes(field_type) && Array.isArray(options) && options.length > 0
@@ -96,6 +125,9 @@ export async function POST(
 }
 
 export async function PUT(req: NextRequest) {
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
+
   let body: { questions?: { id: string; order_index: number }[] };
   try {
     body = await req.json();
@@ -108,7 +140,7 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ error: 'questions array is required' }, { status: 400 });
   }
 
-  const db = getServiceClient();
+  const db      = getServiceClient();
   const updates = questions.map((q) =>
     db.from('questions').update({ order_index: q.order_index }).eq('id', q.id)
   );

@@ -17,6 +17,43 @@ export function getServiceClient() {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+export interface Workspace {
+  id: string;
+  name: string;
+  slug: string;
+  logo_url: string | null;
+  primary_color: string | null;
+  ghl_webhook_url: string | null;
+  ghl_tag: string | null;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface Profile {
+  id: string;
+  user_id: string;
+  full_name: string | null;
+  email: string;
+  role: 'super_admin' | 'provider_admin';
+  workspace_id: string | null;
+  is_active: boolean;
+  invited_by: string | null;
+  created_at: string;
+}
+
+export interface Invitation {
+  id: string;
+  email: string;
+  full_name: string | null;
+  role: 'super_admin' | 'provider_admin';
+  workspace_id: string | null;
+  token: string;
+  accepted_at: string | null;
+  expires_at: string;
+  created_by: string | null;
+  created_at: string;
+}
+
 export interface Tool {
   id: string;
   title: string;
@@ -28,10 +65,10 @@ export interface Tool {
   ghl_enabled: boolean;
   ghl_webhook_url: string | null;
   ghl_tag: string | null;
-  // Provider branding (added via provider-tool-upgrade.sql migration)
   provider_name: string | null;
   provider_logo_url: string | null;
   primary_color: string | null;
+  workspace_id: string | null;
   created_at: string;
   updated_at: string;
 }

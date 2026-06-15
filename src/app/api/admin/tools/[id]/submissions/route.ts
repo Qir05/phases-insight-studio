@@ -1,14 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAuth } from '@/lib/auth';
 import { getServiceClient } from '@/lib/supabase';
 
 export async function GET(
   _req: NextRequest,
   { params }: { params: { id: string } }
 ) {
-  const toolId = String(params.id).trim();
-  const db = getServiceClient();
+  const auth = await requireAuth();
+  if (auth instanceof NextResponse) return auth;
 
-  // Primary query filtered by tool_id
+  const db     = getServiceClient();
+  const toolId = String(params.id).trim();
+
+  // Verify the requesting user can access this tool
+  if (auth.profile.role !== 'super_admin') {
+    const { data: tool } = await db
+      .from('tools')
+      .select('workspace_id')
+      .eq('id', toolId)
+      .single();
+
+    if (!tool || tool.workspace_id !== auth.profile.workspace_id) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+  }
+
   const { data, error } = await db
     .from('submissions')
     .select('*')
@@ -24,8 +40,6 @@ export async function GET(
 
   let finalRows = data ?? [];
 
-  // Fallback: if eq() returned nothing, match in JS to work around any
-  // PostgREST UUID-cast edge cases without changing the schema.
   if (finalRows.length === 0) {
     const { data: allRows } = await db
       .from('submissions')
