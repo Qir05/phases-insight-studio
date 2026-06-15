@@ -1,100 +1,76 @@
-import Image from "next/image";
+import Link from 'next/link';
+import Logo from '@/components/Logo';
+import { ArrowRight, Brain, ClipboardList, Zap } from 'lucide-react';
 
-export default function Home() {
+export default function LandingPage() {
   return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-8 row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="https://nextjs.org/icons/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-semibold">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
+    <div className="min-h-screen bg-white">
+      {/* Header */}
+      <header className="border-b border-gray-100">
+        <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
+          <Logo size={40} />
+          <Link
+            href="/admin"
+            className="text-sm text-gray-500 hover:text-indigo-600 transition-colors"
+          >
+            Admin →
+          </Link>
+        </div>
+      </header>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+      {/* Hero */}
+      <main className="max-w-5xl mx-auto px-6 py-24 text-center">
+        <span className="inline-block bg-indigo-50 text-indigo-700 text-xs font-semibold px-3 py-1 rounded-full uppercase tracking-wide mb-6">
+          Educational Wellness Assessments
+        </span>
+        <h1 className="text-5xl font-bold text-gray-900 tracking-tight mb-6 leading-tight">
+          Phases AI Assessment
+        </h1>
+        <p className="text-xl text-gray-500 max-w-2xl mx-auto mb-10">
+          Personalised, AI-generated educational insights from clinically-informed questionnaires.
+          Designed for wellness and education — not diagnosis.
+        </p>
+        <div className="flex items-center justify-center gap-4 flex-wrap">
+          <Link
+            href="/admin"
+            className="inline-flex items-center gap-2 bg-indigo-600 text-white px-6 py-3 rounded-xl font-semibold hover:bg-indigo-700 transition-colors"
           >
-            <Image
-              className="dark:invert"
-              src="https://nextjs.org/icons/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:min-w-44"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+            Go to Studio <ArrowRight size={17} />
+          </Link>
         </div>
       </main>
-      <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
+
+      {/* Features */}
+      <section className="max-w-5xl mx-auto px-6 pb-24 grid grid-cols-1 md:grid-cols-3 gap-8">
+        {[
+          {
+            icon: ClipboardList,
+            title: 'Custom Questionnaires',
+            body: 'Build unlimited tools with various question types — radio, checkbox, scale, and more.',
+          },
+          {
+            icon: Brain,
+            title: 'Claude AI Analysis',
+            body: 'Each submission is analysed by Claude, producing a thoughtful, educational response.',
+          },
+          {
+            icon: Zap,
+            title: 'GHL Integration',
+            body: 'Automatically push results to GoHighLevel with custom tags and webhook payloads.',
+          },
+        ].map(({ icon: Icon, title, body }) => (
+          <div key={title} className="bg-gray-50 rounded-2xl p-8 border border-gray-100">
+            <div className="w-10 h-10 bg-indigo-100 rounded-xl flex items-center justify-center mb-4">
+              <Icon size={20} className="text-indigo-600" />
+            </div>
+            <h3 className="font-semibold text-gray-900 mb-2">{title}</h3>
+            <p className="text-sm text-gray-500">{body}</p>
+          </div>
+        ))}
+      </section>
+
+      <footer className="border-t border-gray-100 py-8 text-center text-xs text-gray-400">
+        © {new Date().getFullYear()} Phases Clinic. This platform provides educational information only, not medical advice.
       </footer>
     </div>
   );
