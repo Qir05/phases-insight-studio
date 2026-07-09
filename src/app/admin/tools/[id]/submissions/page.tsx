@@ -21,6 +21,18 @@ function StatusBadge({ status }: { status: string | null }) {
   );
 }
 
+function GenerationBadge({ status }: { status: string | null }) {
+  const map: Record<string, string> = {
+    success: 'bg-green-50 text-green-700',
+    failed:  'bg-red-50 text-red-600',
+  };
+  return (
+    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${map[status ?? ''] ?? 'bg-gray-50 text-gray-400'}`}>
+      AI: {status ?? 'unknown'}
+    </span>
+  );
+}
+
 export default function SubmissionsPage() {
   const { id } = useParams<{ id: string }>();
   const [tool, setTool] = useState<Tool | null>(null);
@@ -178,7 +190,8 @@ export default function SubmissionsPage() {
                     {sub.phone && ` · ${sub.phone}`}
                   </p>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <GenerationBadge status={sub.generation_status} />
                   <StatusBadge status={sub.ghl_sync_status} />
                   {expanded === sub.id
                     ? <ChevronUp size={15} className="text-gray-400" />
@@ -203,14 +216,63 @@ export default function SubmissionsPage() {
                     </div>
                   )}
 
-                  {/* AI Result */}
+                  {/* Generation meta */}
+                  <div>
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Generation</p>
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                      <GenerationBadge status={sub.generation_status} />
+                      {sub.model_used && (
+                        <span className="font-mono bg-gray-50 border border-gray-100 rounded px-2 py-0.5">
+                          {sub.model_used}
+                        </span>
+                      )}
+                    </div>
+                    {sub.generation_error && (
+                      <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg p-3 mt-2 whitespace-pre-wrap">
+                        {sub.generation_error}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Structured AI Result */}
+                  {sub.result_json && (
+                    <div>
+                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Result</p>
+                      <div className="bg-gray-50 rounded-lg p-3 space-y-2">
+                        <p className="text-sm font-semibold text-gray-800">{sub.result_json.result_title}</p>
+                        <p className="text-xs text-gray-600">{sub.result_json.short_summary}</p>
+                        <p className="text-xs text-gray-500"><span className="font-medium text-gray-600">Why: </span>{sub.result_json.why_this_result}</p>
+                        {sub.result_json.key_patterns_from_answers?.length > 0 && (
+                          <ul className="text-xs text-gray-500 list-disc list-inside space-y-0.5">
+                            {sub.result_json.key_patterns_from_answers.map((p, i) => <li key={i}>{p}</li>)}
+                          </ul>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* AI Result (raw/fallback) */}
                   {sub.ai_result && (
                     <div>
-                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">AI Result</p>
+                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                        {sub.result_json ? 'AI Result (markdown)' : 'AI Result'}
+                      </p>
                       <p className="text-xs text-gray-600 whitespace-pre-wrap leading-relaxed bg-gray-50 rounded-lg p-3 line-clamp-6">
                         {sub.ai_result}
                       </p>
                     </div>
+                  )}
+
+                  {/* Compiled prompt sent to the AI */}
+                  {sub.compiled_prompt && (
+                    <details className="text-xs">
+                      <summary className="font-semibold text-gray-500 uppercase tracking-wide cursor-pointer select-none">
+                        Compiled Prompt
+                      </summary>
+                      <p className="text-gray-600 whitespace-pre-wrap leading-relaxed bg-gray-50 rounded-lg p-3 mt-2 font-mono">
+                        {sub.compiled_prompt}
+                      </p>
+                    </details>
                   )}
 
                   {/* Links */}

@@ -1,5 +1,6 @@
 import ReactMarkdown from 'react-markdown';
 import Disclaimer from '@/components/Disclaimer';
+import StructuredResultView from '@/components/StructuredResultView';
 import { getServiceClient } from '@/lib/supabase';
 import { notFound } from 'next/navigation';
 import { CheckCircle } from 'lucide-react';
@@ -60,9 +61,13 @@ export default async function PublicResultPage({ params }: PageProps) {
 
         {/* Result card */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 sm:p-8">
-          <div className="prose prose-sm prose-gray max-w-none">
-            <ReactMarkdown>{submission.ai_result ?? ''}</ReactMarkdown>
-          </div>
+          {submission.result_json ? (
+            <StructuredResultView result={submission.result_json} />
+          ) : (
+            <div className="prose prose-sm prose-gray max-w-none">
+              <ReactMarkdown>{submission.ai_result ?? ''}</ReactMarkdown>
+            </div>
+          )}
         </div>
 
         <Disclaimer />

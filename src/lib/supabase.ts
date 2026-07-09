@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import type { StructuredResult } from './groq';
 
 // Public client – safe for browser/server components (anon key)
 export const supabase = createClient(
@@ -95,6 +96,10 @@ export interface Submission {
   answers: Record<string, string | string[]>;
   compiled_prompt: string | null;
   ai_result: string | null;
+  result_json: StructuredResult | null;
+  model_used: string | null;
+  generation_status: 'success' | 'failed' | null;
+  generation_error: string | null;
   result_token: string;
   ghl_sync_status: 'pending' | 'success' | 'failed' | 'skipped' | null;
   ghl_response: Record<string, unknown> | null;

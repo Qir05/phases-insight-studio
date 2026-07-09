@@ -129,6 +129,7 @@ export default function PublicQuizPage() {
       // Only store and redirect after confirmed successful save to Supabase
       sessionStorage.setItem(`result_${slug}`, JSON.stringify({
         aiResult:     json.aiResult,
+        resultJson:   json.resultJson ?? null,
         resultToken:  json.resultToken,
         toolTitle:    tool?.title        ?? '',
         providerName: tool?.provider_name ?? null,

@@ -3,11 +3,14 @@ import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import ReactMarkdown from 'react-markdown';
 import Disclaimer from '@/components/Disclaimer';
+import StructuredResultView from '@/components/StructuredResultView';
 import { Copy, ExternalLink, CheckCircle } from 'lucide-react';
 import { toast } from 'sonner';
+import type { StructuredResult } from '@/lib/groq';
 
 interface StoredResult {
   aiResult:     string;
+  resultJson?:  StructuredResult | null;
   resultToken:  string;
   toolTitle:    string;
   providerName?: string | null;
@@ -57,9 +60,13 @@ export default function SessionResultPage() {
 
         {/* Result card */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 sm:p-8">
-          <div className="prose prose-sm prose-gray max-w-none">
-            <ReactMarkdown>{result.aiResult}</ReactMarkdown>
-          </div>
+          {result.resultJson ? (
+            <StructuredResultView result={result.resultJson} />
+          ) : (
+            <div className="prose prose-sm prose-gray max-w-none">
+              <ReactMarkdown>{result.aiResult}</ReactMarkdown>
+            </div>
+          )}
         </div>
 
         <Disclaimer />

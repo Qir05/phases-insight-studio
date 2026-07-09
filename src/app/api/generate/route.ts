@@ -1,7 +1,7 @@
 import { randomBytes } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceClient } from '@/lib/supabase';
-import { generateResult } from '@/lib/groq';
+import { generateResult, structuredResultToMarkdown, GROQ_MODEL, StructuredResult } from '@/lib/groq';
 import { compilePrompt } from '@/lib/utils';
 
 export async function POST(req: NextRequest) {
@@ -41,32 +41,64 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Tool not found' }, { status: 404 });
   }
 
-  const compiledPrompt = compilePrompt(tool.system_prompt, answers);
+  const { data: questionRows, error: qErr } = await db
+    .from('questions')
+    .select('label, variable_name')
+    .eq('tool_id', tool.id)
+    .order('order_index');
 
-  let aiResult: string;
+  if (qErr) {
+    console.error('[generate] questions fetch error:', qErr);
+  }
+  const questions = questionRows ?? [];
+
+  const compiledPrompt = compilePrompt(
+    { title: tool.title, description: tool.description },
+    tool.system_prompt,
+    answers,
+    questions
+  );
+
+  let aiResultText: string | null = null;
+  let resultJson: StructuredResult | null = null;
+  let modelUsed: string | null = null;
+  let generationStatus: 'success' | 'failed' = 'success';
+  let generationError: string | null = null;
+
   try {
-    aiResult = await generateResult(compiledPrompt);
+    const gen = await generateResult(compiledPrompt);
+    resultJson = gen.parsed;
+    modelUsed = gen.model;
+    aiResultText = gen.parsed ? structuredResultToMarkdown(gen.parsed) : gen.raw;
   } catch (err) {
     console.error('[generate] Groq error:', err);
-    return NextResponse.json({ error: 'AI generation failed' }, { status: 500 });
+    generationStatus = 'failed';
+    generationError = err instanceof Error ? err.message : String(err);
+    modelUsed = GROQ_MODEL;
   }
 
   // Generate token in app code — removes dependency on pgcrypto DB extension
   const resultToken = randomBytes(24).toString('hex');
 
+  // Always persist the submission — even on AI failure — so the user's
+  // answers and the failure reason are never lost.
   const { data: submission, error: subErr } = await db
     .from('submissions')
     .insert({
-      tool_id:         tool.id,
-      first_name:      firstName     || null,
-      last_name:       lastName      || null,
+      tool_id:           tool.id,
+      first_name:        firstName || null,
+      last_name:         lastName || null,
       email,
-      phone:           phone         || null,
+      phone:              phone || null,
       answers,
-      compiled_prompt: compiledPrompt,
-      ai_result:       aiResult,
-      result_token:    resultToken,
-      ghl_sync_status: tool.ghl_enabled ? 'pending' : 'skipped',
+      compiled_prompt:    compiledPrompt,
+      ai_result:          aiResultText,
+      result_json:        resultJson,
+      model_used:         modelUsed,
+      generation_status:  generationStatus,
+      generation_error:   generationError,
+      result_token:       resultToken,
+      ghl_sync_status:     tool.ghl_enabled ? 'pending' : 'skipped',
     })
     .select()
     .single();
@@ -80,6 +112,13 @@ export async function POST(req: NextRequest) {
         hint:   subErr?.hint   ?? undefined,
         code:   subErr?.code   ?? undefined,
       },
+      { status: 500 }
+    );
+  }
+
+  if (generationStatus === 'failed') {
+    return NextResponse.json(
+      { error: 'AI generation failed', detail: generationError, submission_id: submission.id },
       { status: 500 }
     );
   }
@@ -98,7 +137,7 @@ export async function POST(req: NextRequest) {
       toolSlug:   tool.slug,
       tag:        tool.ghl_tag ?? '',
       answers,
-      aiResult,
+      aiResult: aiResultText,
       resultUrl,
       source: 'Phases Insight Studio',
     };
@@ -124,7 +163,8 @@ export async function POST(req: NextRequest) {
   }
 
   return NextResponse.json({
-    aiResult,
+    aiResult: aiResultText,
+    resultJson,
     submission_id: submission.id,
     result_token:  submission.result_token,
     result_url:    resultUrl,
