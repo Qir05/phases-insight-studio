@@ -2,6 +2,8 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Question, Tool } from '@/lib/supabase';
+import type { QuestionOption, Outcome } from '@/lib/supabase';
+import { getOptionLabel, getOptionValue } from '@/lib/scoring';
 import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -16,12 +18,11 @@ export default function PublicQuizPage() {
   const [loading, setLoading]     = useState(true);
   const [notFound, setNotFound]   = useState(false);
 
-  const [step, setStep]         = useState(0);
-  const [answers, setAnswers]   = useState<AnswerMap>({});
-  const [contact, setContact]   = useState({ firstName: '', lastName: '', email: '', phone: '' });
+  const [step, setStep]             = useState(0);
+  const [answers, setAnswers]       = useState<AnswerMap>({});
+  const [contact, setContact]       = useState({ firstName: '', lastName: '', email: '', phone: '' });
   const [submitting, setSubmitting] = useState(false);
-  // Synchronous guard — prevents double-submit before React re-renders the button
-  const submittingRef = useRef(false);
+  const submittingRef               = useRef(false);
 
   useEffect(() => {
     fetch(`/api/tools/${slug}`)
@@ -37,7 +38,7 @@ export default function PublicQuizPage() {
       });
   }, [slug]);
 
-  // ── Stable callbacks — no new references between keystrokes ──────────────
+  // ── Stable callbacks ──────────────────────────────────────────────────────
 
   const setAnswer = useCallback((label: string, value: string | string[]) => {
     setAnswers((a) => ({ ...a, [label]: value }));
@@ -46,7 +47,7 @@ export default function PublicQuizPage() {
   const toggleCheckbox = useCallback((label: string, option: string) => {
     setAnswers((a) => {
       const current = (a[label] as string[] | undefined) ?? [];
-      const next = current.includes(option)
+      const next    = current.includes(option)
         ? current.filter((v) => v !== option)
         : [...current, option];
       return { ...a, [label]: next };
@@ -54,11 +55,10 @@ export default function PublicQuizPage() {
   }, []);
 
   const setFirstName = useCallback((v: string) => setContact((c) => ({ ...c, firstName: v })), []);
-  const setLastName  = useCallback((v: string) => setContact((c) => ({ ...c, lastName: v })), []);
-  const setEmail     = useCallback((v: string) => setContact((c) => ({ ...c, email: v })), []);
-  const setPhone     = useCallback((v: string) => setContact((c) => ({ ...c, phone: v })), []);
+  const setLastName  = useCallback((v: string) => setContact((c) => ({ ...c, lastName: v })),  []);
+  const setEmail     = useCallback((v: string) => setContact((c) => ({ ...c, email: v })),     []);
+  const setPhone     = useCallback((v: string) => setContact((c) => ({ ...c, phone: v })),     []);
 
-  // Stable per-step callbacks — recreated only when step label changes
   const currentLabel     = questions[step]?.label ?? '';
   const questionOnChange = useCallback((v: string) => setAnswer(currentLabel, v),    [currentLabel, setAnswer]);
   const questionOnToggle = useCallback((o: string) => toggleCheckbox(currentLabel, o), [currentLabel, toggleCheckbox]);
@@ -98,7 +98,6 @@ export default function PublicQuizPage() {
   }
 
   async function handleSubmit() {
-    // Synchronous guard — checked before any state update or re-render
     if (submittingRef.current) return;
     submittingRef.current = true;
     setSubmitting(true);
@@ -120,17 +119,47 @@ export default function PublicQuizPage() {
       const json = await res.json();
 
       if (!res.ok) {
-        // Show the most specific error available
         const msg = json.detail ?? json.error ?? 'Something went wrong. Please try again.';
         toast.error(msg);
-        return; // never redirect on failure
+        return;
       }
 
-      // Only store and redirect after confirmed successful save to Supabase
+      if (json.mode === 'smartform_redirect') {
+        window.location.href = json.redirect_url;
+        return;
+      }
+
+      if (json.mode === 'structured_outcome') {
+        sessionStorage.setItem(`result_${slug}`, JSON.stringify({
+          mode:         'structured_outcome',
+          outcome:      json.outcome   as Outcome,
+          resultToken:  json.result_token as string,
+          toolTitle:    tool?.title         ?? '',
+          providerName: tool?.provider_name ?? null,
+        }));
+        router.push(`/t/${slug}/result`);
+        return;
+      }
+
+      if (json.mode === 'hybrid_ai_with_outcome') {
+        sessionStorage.setItem(`result_${slug}`, JSON.stringify({
+          mode:             'hybrid_ai_with_outcome',
+          outcome:          json.outcome          as Outcome,
+          aiPersonalization: json.aiPersonalization as string,
+          resultToken:      json.result_token      as string,
+          toolTitle:        tool?.title             ?? '',
+          providerName:     tool?.provider_name     ?? null,
+        }));
+        router.push(`/t/${slug}/result`);
+        return;
+      }
+
+      // ai_result (default)
       sessionStorage.setItem(`result_${slug}`, JSON.stringify({
-        aiResult:     json.aiResult,
+        mode:         'ai_result',
+        aiResult:     json.aiResult     as string,
         resultJson:   json.resultJson ?? null,
-        resultToken:  json.resultToken,
+        resultToken:  json.resultToken  as string,
         toolTitle:    tool?.title        ?? '',
         providerName: tool?.provider_name ?? null,
       }));
@@ -141,7 +170,7 @@ export default function PublicQuizPage() {
     }
   }
 
-  const q            = !isContactStep ? questions[step] : null;
+  const q             = !isContactStep ? questions[step] : null;
   const providerLabel = tool.provider_name ?? 'AI Assessment';
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -161,7 +190,7 @@ export default function PublicQuizPage() {
         </div>
       </header>
 
-      {/* Full-width progress bar */}
+      {/* Progress bar */}
       <div className="bg-gray-200 h-0.5 w-full">
         <div
           className="bg-indigo-600 h-0.5 transition-all duration-500 ease-out"
@@ -170,16 +199,13 @@ export default function PublicQuizPage() {
       </div>
 
       <main className="max-w-xl mx-auto px-4 sm:px-6 py-8">
-        {/* Tool title (visible on every step) */}
         <div className="mb-4">
           <h1 className="text-xl font-bold text-gray-900">{tool.title}</h1>
           {tool.description && <p className="text-sm text-gray-500 mt-1">{tool.description}</p>}
         </div>
 
-        {/* Form card */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100">
           <div className="p-6 sm:p-8">
-            {/* Step indicator */}
             <div className="flex items-center justify-between mb-6">
               <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">
                 Step {step + 1} of {totalSteps}
@@ -237,12 +263,12 @@ export default function PublicQuizPage() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
-                  <Field label="First Name" value={contact.firstName} onChange={setFirstName} />
-                  <Field label="Last Name"  value={contact.lastName}  onChange={setLastName} />
+                  <ContactField label="First Name" value={contact.firstName} onChange={setFirstName} />
+                  <ContactField label="Last Name"  value={contact.lastName}  onChange={setLastName} />
                 </div>
-                <Field label="Email *" type="email" value={contact.email} onChange={setEmail} />
+                <ContactField label="Email *" type="email" value={contact.email} onChange={setEmail} />
                 {tool.phone_capture_enabled && (
-                  <Field label="Phone" type="tel" value={contact.phone} onChange={setPhone} />
+                  <ContactField label="Phone" type="tel" value={contact.phone} onChange={setPhone} />
                 )}
 
                 <div className="flex items-center gap-3 pt-1">
@@ -260,9 +286,11 @@ export default function PublicQuizPage() {
                     className="flex-1 inline-flex items-center justify-center gap-2 bg-indigo-600 text-white px-6 py-2.5 rounded-xl text-sm font-semibold hover:bg-indigo-700 disabled:opacity-40 transition-colors"
                   >
                     {submitting ? (
-                      <><Loader2 size={15} className="animate-spin" /> Generating…</>
+                      <><Loader2 size={15} className="animate-spin" /> Submitting…</>
+                    ) : tool?.tool_mode === 'smartform_redirect' ? (
+                      'Submit →'
                     ) : (
-                      'Generate My Results →'
+                      'Get My Results →'
                     )}
                   </button>
                 </div>
@@ -275,7 +303,7 @@ export default function PublicQuizPage() {
   );
 }
 
-// ── Sub-components (module-level — never redefined inside render) ─────────────
+// ── Sub-components ────────────────────────────────────────────────────────────
 
 const QuestionInput = memo(function QuestionInput({
   question,
@@ -288,7 +316,7 @@ const QuestionInput = memo(function QuestionInput({
   onChange: (v: string) => void;
   onToggle: (option: string) => void;
 }) {
-  const opts = question.options as string[] | null;
+  const opts = question.options as QuestionOption[] | null;
   const ft   = question.field_type;
   const cls  = 'w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500';
 
@@ -310,24 +338,28 @@ const QuestionInput = memo(function QuestionInput({
   if (ft === 'radio' && opts) {
     return (
       <div className="space-y-2">
-        {opts.map((opt) => (
-          <label
-            key={opt}
-            className={`flex items-center gap-3 border rounded-xl px-4 py-3 cursor-pointer transition-colors ${
-              value === opt ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200 hover:border-gray-300'
-            }`}
-          >
-            <input
-              type="radio"
-              name={question.id}
-              value={opt}
-              checked={value === opt}
-              onChange={() => onChange(opt)}
-              className="accent-indigo-600"
-            />
-            <span className="text-sm text-gray-800">{opt}</span>
-          </label>
-        ))}
+        {opts.map((opt) => {
+          const label = getOptionLabel(opt);
+          const val   = getOptionValue(opt);
+          return (
+            <label
+              key={val}
+              className={`flex items-center gap-3 border rounded-xl px-4 py-3 cursor-pointer transition-colors ${
+                value === label ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200 hover:border-gray-300'
+              }`}
+            >
+              <input
+                type="radio"
+                name={question.id}
+                value={label}
+                checked={value === label}
+                onChange={() => onChange(label)}
+                className="accent-indigo-600"
+              />
+              <span className="text-sm text-gray-800">{label}</span>
+            </label>
+          );
+        })}
       </div>
     );
   }
@@ -335,22 +367,26 @@ const QuestionInput = memo(function QuestionInput({
     const selected = (value as string[]) ?? [];
     return (
       <div className="space-y-2">
-        {opts.map((opt) => (
-          <label
-            key={opt}
-            className={`flex items-center gap-3 border rounded-xl px-4 py-3 cursor-pointer transition-colors ${
-              selected.includes(opt) ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200 hover:border-gray-300'
-            }`}
-          >
-            <input
-              type="checkbox"
-              checked={selected.includes(opt)}
-              onChange={() => onToggle(opt)}
-              className="accent-indigo-600"
-            />
-            <span className="text-sm text-gray-800">{opt}</span>
-          </label>
-        ))}
+        {opts.map((opt) => {
+          const label = getOptionLabel(opt);
+          const val   = getOptionValue(opt);
+          return (
+            <label
+              key={val}
+              className={`flex items-center gap-3 border rounded-xl px-4 py-3 cursor-pointer transition-colors ${
+                selected.includes(label) ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200 hover:border-gray-300'
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={selected.includes(label)}
+                onChange={() => onToggle(label)}
+                className="accent-indigo-600"
+              />
+              <span className="text-sm text-gray-800">{label}</span>
+            </label>
+          );
+        })}
       </div>
     );
   }
@@ -358,14 +394,18 @@ const QuestionInput = memo(function QuestionInput({
     return (
       <select value={(value as string) ?? ''} onChange={(e) => onChange(e.target.value)} className={cls}>
         <option value="">Select an option…</option>
-        {opts.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+        {opts.map((opt) => {
+          const label = getOptionLabel(opt);
+          const val   = getOptionValue(opt);
+          return <option key={val} value={label}>{label}</option>;
+        })}
       </select>
     );
   }
   return null;
 });
 
-const Field = memo(function Field({
+const ContactField = memo(function ContactField({
   label,
   value,
   onChange,

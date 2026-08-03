@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth';
 import { getServiceClient } from '@/lib/supabase';
+import type { ResultStrategy } from '@/lib/supabase';
 import { slugify } from '@/lib/utils';
+
+const VALID_STRATEGIES: ResultStrategy[] = [
+  'ai_generated',
+  'structured_outcome',
+  'hybrid_ai_with_outcome',
+];
 
 export async function GET() {
   const auth = await requireAuth();
@@ -37,14 +44,25 @@ export async function POST(req: NextRequest) {
     email_capture_enabled, phone_capture_enabled,
     ghl_enabled, ghl_webhook_url, ghl_tag,
     provider_name, provider_logo_url, primary_color,
+    tool_mode, webhook_url, redirect_url,
     workspace_id: requestedWorkspaceId,
+    // Result engine fields
+    result_strategy,
+    scoring_config,
+    result_config,
+    result_template,
+    admin_notes,
   } = body;
 
-  if (!title || !system_prompt) {
-    return NextResponse.json(
-      { error: 'title and system_prompt are required' },
-      { status: 400 }
-    );
+  const resolvedMode = tool_mode === 'smartform_redirect' ? 'smartform_redirect' : 'ai_result';
+
+  const resolvedStrategy: ResultStrategy =
+    VALID_STRATEGIES.includes(result_strategy)
+      ? (result_strategy as ResultStrategy)
+      : 'ai_generated';
+
+  if (!title) {
+    return NextResponse.json({ error: 'title is required' }, { status: 400 });
   }
 
   // Workspace assignment: provider_admin is always locked to their own workspace
@@ -62,7 +80,7 @@ export async function POST(req: NextRequest) {
       title,
       slug,
       description:             description          ?? null,
-      system_prompt,
+      system_prompt:           system_prompt        ?? null,
       email_capture_enabled:   email_capture_enabled ?? true,
       phone_capture_enabled:   phone_capture_enabled ?? false,
       ghl_enabled:             ghl_enabled           ?? false,
@@ -71,7 +89,16 @@ export async function POST(req: NextRequest) {
       provider_name:           provider_name         ?? null,
       provider_logo_url:       provider_logo_url     ?? null,
       primary_color:           primary_color         ?? null,
+      tool_mode:               resolvedMode,
+      webhook_url:             webhook_url           ?? null,
+      redirect_url:            redirect_url          ?? null,
       workspace_id,
+      // Result engine
+      result_strategy:         resolvedStrategy,
+      scoring_config:          scoring_config        ?? null,
+      result_config:           result_config         ?? null,
+      result_template:         result_template       ?? null,
+      admin_notes:             admin_notes           ?? null,
     })
     .select()
     .single();

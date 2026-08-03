@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Tool } from '@/lib/supabase';
-import { PlusCircle, ExternalLink, List, Users, Trash2, BarChart3, Layers } from 'lucide-react';
+import { PlusCircle, ExternalLink, List, Users, Trash2, BarChart3, Layers, Settings } from 'lucide-react';
 import { toast } from 'sonner';
 
 type ToolWithCounts = Tool & {
@@ -147,6 +147,12 @@ export default function AdminDashboard() {
                     className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-indigo-600 border border-gray-200 rounded-lg px-2.5 py-1.5 transition-colors"
                   >
                     <List size={12} /> Questions
+                  </Link>
+                  <Link
+                    href={`/admin/tools/${tool.id}/settings`}
+                    className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-indigo-600 border border-gray-200 rounded-lg px-2.5 py-1.5 transition-colors"
+                  >
+                    <Settings size={12} /> Settings
                   </Link>
                   <Link
                     href={`/admin/tools/${tool.id}/submissions`}

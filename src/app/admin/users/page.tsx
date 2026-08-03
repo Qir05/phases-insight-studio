@@ -2,11 +2,19 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { toast } from 'sonner';
-import { UserPlus, UserCheck, UserX, Shield, Building2 } from 'lucide-react';
+import { UserPlus, UserCheck, UserX, Shield, Building2, Mail, KeyRound, Link as LinkIcon } from 'lucide-react';
+import ActionsMenu from '@/components/ActionsMenu';
+import SecretResultModal from '@/components/SecretResultModal';
 import type { Profile } from '@/lib/supabase';
 
 type UserWithWorkspace = Profile & {
   workspaces: { name: string } | null;
+};
+
+type SecretResult = {
+  title: string;
+  value: string;
+  warning: string;
 };
 
 function RoleBadge({ role }: { role: string }) {
@@ -22,9 +30,11 @@ function RoleBadge({ role }: { role: string }) {
 }
 
 export default function UsersPage() {
-  const [users,    setUsers]    = useState<UserWithWorkspace[]>([]);
-  const [loading,  setLoading]  = useState(true);
-  const [toggling, setToggling] = useState<string | null>(null);
+  const [users,        setUsers]        = useState<UserWithWorkspace[]>([]);
+  const [loading,      setLoading]      = useState(true);
+  const [pendingId,    setPendingId]    = useState<string | null>(null);
+  const [currentUser,  setCurrentUser]  = useState<Profile | null>(null);
+  const [secretResult, setSecretResult] = useState<SecretResult | null>(null);
 
   const load = useCallback(async () => {
     const res  = await fetch('/api/admin/users');
@@ -33,23 +43,78 @@ export default function UsersPage() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    fetch('/api/auth/me')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { profile?: Profile } | null) => {
+        if (data?.profile) setCurrentUser(data.profile);
+      });
+  }, [load]);
 
   async function toggleActive(userId: string, current: boolean, name: string) {
     if (!confirm(`${current ? 'Deactivate' : 'Reactivate'} ${name}?`)) return;
-    setToggling(userId);
+    setPendingId(userId);
     const res  = await fetch(`/api/admin/users/${userId}`, {
       method:  'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ is_active: !current }),
     });
-    setToggling(null);
+    setPendingId(null);
     if (res.ok) {
       toast.success(current ? 'User deactivated.' : 'User reactivated.');
       load();
     } else {
       const j = await res.json() as { error?: string };
       toast.error(j.error ?? 'Failed to update.');
+    }
+  }
+
+  async function sendPasswordReset(userId: string, name: string) {
+    if (!confirm(`Send a password reset email to ${name}?`)) return;
+    setPendingId(userId);
+    const res = await fetch(`/api/admin/users/${userId}/send-password-reset`, { method: 'POST' });
+    setPendingId(null);
+    if (res.ok) {
+      toast.success('Password reset email sent.');
+    } else {
+      const j = await res.json() as { error?: string };
+      toast.error(j.error ?? 'Failed to send reset email.');
+    }
+  }
+
+  async function generateRecoveryLink(userId: string, name: string) {
+    setPendingId(userId);
+    const res = await fetch(`/api/admin/users/${userId}/generate-recovery-link`, { method: 'POST' });
+    setPendingId(null);
+    if (res.ok) {
+      const j = await res.json() as { link: string };
+      setSecretResult({
+        title: `Recovery link for ${name}`,
+        value: j.link,
+        warning: 'This link lets anyone who has it set a new password. Share it securely and only with the intended user.',
+      });
+    } else {
+      const j = await res.json() as { error?: string };
+      toast.error(j.error ?? 'Failed to generate link.');
+    }
+  }
+
+  async function setTemporaryPassword(userId: string, name: string) {
+    if (!confirm(`Set a temporary password for ${name}? Their current password will stop working immediately.`)) return;
+    setPendingId(userId);
+    const res = await fetch(`/api/admin/users/${userId}/set-temporary-password`, { method: 'POST' });
+    setPendingId(null);
+    if (res.ok) {
+      const j = await res.json() as { temporaryPassword: string };
+      setSecretResult({
+        title: `Temporary password for ${name}`,
+        value: j.temporaryPassword,
+        warning: 'Share this securely. This password will not be shown again.',
+      });
+    } else {
+      const j = await res.json() as { error?: string };
+      toast.error(j.error ?? 'Failed to set temporary password.');
     }
   }
 
@@ -100,7 +165,10 @@ export default function UsersPage() {
           {/* Rows */}
           {users.map((user) => {
             const name    = user.full_name || user.email;
-            const pending = toggling === user.user_id;
+            const pending = pendingId === user.user_id;
+            const isSelf  = currentUser?.user_id === user.user_id;
+            const canManage = currentUser?.role === 'super_admin' && !isSelf;
+
             return (
               <div
                 key={user.id}
@@ -150,25 +218,52 @@ export default function UsersPage() {
 
                 {/* Action */}
                 <div>
-                  <button
-                    onClick={() => toggleActive(user.user_id, user.is_active, name)}
-                    disabled={pending}
-                    title={user.is_active ? 'Deactivate' : 'Reactivate'}
-                    className={`inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border transition-colors disabled:opacity-50 ${
-                      user.is_active
-                        ? 'border-red-200 text-red-500 hover:bg-red-50'
-                        : 'border-green-200 text-green-600 hover:bg-green-50'
-                    }`}
-                  >
-                    {user.is_active
-                      ? <><UserX size={12} /> Deactivate</>
-                      : <><UserCheck size={12} /> Reactivate</>}
-                  </button>
+                  {canManage ? (
+                    <ActionsMenu
+                      disabled={pending}
+                      items={[
+                        {
+                          label: 'Reset Email',
+                          icon: Mail,
+                          onClick: () => sendPasswordReset(user.user_id, name),
+                        },
+                        {
+                          label: 'Recovery Link',
+                          icon: LinkIcon,
+                          onClick: () => generateRecoveryLink(user.user_id, name),
+                        },
+                        {
+                          label: 'Temp Password',
+                          icon: KeyRound,
+                          onClick: () => setTemporaryPassword(user.user_id, name),
+                        },
+                        {
+                          label: user.is_active ? 'Deactivate' : 'Reactivate',
+                          icon: user.is_active ? UserX : UserCheck,
+                          onClick: () => toggleActive(user.user_id, user.is_active, name),
+                          danger: user.is_active,
+                        },
+                      ]}
+                    />
+                  ) : (
+                    <span className="text-xs text-gray-300" title={isSelf ? "You can't manage your own account" : undefined}>
+                      {isSelf ? '—' : ''}
+                    </span>
+                  )}
                 </div>
               </div>
             );
           })}
         </div>
+      )}
+
+      {secretResult && (
+        <SecretResultModal
+          title={secretResult.title}
+          value={secretResult.value}
+          warning={secretResult.warning}
+          onClose={() => setSecretResult(null)}
+        />
       )}
     </div>
   );

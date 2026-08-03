@@ -4,7 +4,9 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { Question, Tool } from '@/lib/supabase';
 import { toast } from 'sonner';
-import { Plus, Trash2, GripVertical, ExternalLink, ArrowLeft, Users } from 'lucide-react';
+import { Plus, Trash2, GripVertical, ExternalLink, ArrowLeft, Users, Settings } from 'lucide-react';
+import { getOptionLabel } from '@/lib/scoring';
+import type { QuestionOption } from '@/lib/supabase';
 
 const FIELD_TYPES = [
   { value: 'text',      label: 'Text input' },
@@ -28,31 +30,57 @@ function toVarName(label: string): string {
 }
 
 interface NewQuestion {
-  label: string;
-  variable_name: string;
-  varNameEdited: boolean;
-  field_type: FieldTypeValue;
-  options: string;
-  required: boolean;
+  label:          string;
+  variable_name:  string;
+  varNameEdited:  boolean;
+  field_type:     FieldTypeValue;
+  options:        string;   // simple mode: one per line
+  optionsJson:    string;   // JSON mode
+  useJsonOptions: boolean;
+  required:       boolean;
+  scoring_key:    string;
+  category:       string;
 }
 
 const EMPTY_NEW: NewQuestion = {
-  label: '',
-  variable_name: '',
-  varNameEdited: false,
-  field_type: 'radio',
-  options: '',
-  required: true,
+  label:          '',
+  variable_name:  '',
+  varNameEdited:  false,
+  field_type:     'radio',
+  options:        '',
+  optionsJson:    '',
+  useJsonOptions: false,
+  required:       true,
+  scoring_key:    '',
+  category:       '',
 };
+
+const JSON_OPTIONS_PLACEHOLDER = JSON.stringify(
+  [
+    { label: '(A) Hot flashes and night sweats', value: 'A', score: 1, category: 'hormone_support' },
+    { label: '(B) Mood swings and anxiety',      value: 'B', score: 1, category: 'nervous_system' },
+  ],
+  null, 2
+);
+
+/** Display summary for a question's options (handles both string[] and OptionObject[]) */
+function renderOptionsSummary(opts: QuestionOption[] | null): string {
+  if (!opts || opts.length === 0) return '';
+  return opts.map(getOptionLabel).join(', ');
+}
 
 export default function QuestionsPage() {
   const { id } = useParams<{ id: string }>();
-  const [tool, setTool] = useState<Tool | null>(null);
+  const [tool, setTool]         = useState<Tool | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading]   = useState(true);
   const [addingNew, setAddingNew] = useState(false);
-  const [newQ, setNewQ] = useState<NewQuestion>(EMPTY_NEW);
-  const [saving, setSaving] = useState(false);
+  const [newQ, setNewQ]         = useState<NewQuestion>(EMPTY_NEW);
+  const [saving, setSaving]     = useState(false);
+
+  const needsScoringFields =
+    tool?.result_strategy === 'structured_outcome' ||
+    tool?.result_strategy === 'hybrid_ai_with_outcome';
 
   const load = useCallback(async () => {
     const [toolRes, qRes] = await Promise.all([
@@ -60,7 +88,7 @@ export default function QuestionsPage() {
       fetch(`/api/admin/tools/${id}/questions`),
     ]);
     const toolJson = await toolRes.json();
-    const qJson = await qRes.json();
+    const qJson    = await qRes.json();
     setTool(toolJson.tool);
     setQuestions(qJson.questions ?? []);
     setLoading(false);
@@ -81,25 +109,41 @@ export default function QuestionsPage() {
   }, []);
 
   async function addQuestion() {
-    if (!newQ.label.trim()) { toast.error('Question label is required'); return; }
+    if (!newQ.label.trim())         { toast.error('Question label is required'); return; }
     if (!newQ.variable_name.trim()) { toast.error('Variable name is required'); return; }
     setSaving(true);
 
     const needsOptions = OPTIONS_TYPES.includes(newQ.field_type as typeof OPTIONS_TYPES[number]);
-    const parsedOptions = needsOptions
-      ? newQ.options.split('\n').map((s) => s.trim()).filter(Boolean)
-      : [];
-    const options = parsedOptions.length > 0 ? parsedOptions : null;
+
+    let parsedOptions: unknown[] | null = null;
+    if (needsOptions) {
+      if (newQ.useJsonOptions) {
+        if (!newQ.optionsJson.trim()) {
+          toast.error('JSON options cannot be empty'); setSaving(false); return;
+        }
+        try {
+          parsedOptions = JSON.parse(newQ.optionsJson);
+          if (!Array.isArray(parsedOptions)) throw new Error('Must be an array');
+        } catch {
+          toast.error('Options JSON is invalid — must be an array'); setSaving(false); return;
+        }
+      } else {
+        const lines = newQ.options.split('\n').map((s) => s.trim()).filter(Boolean);
+        parsedOptions = lines.length > 0 ? lines : null;
+      }
+    }
 
     const res = await fetch(`/api/admin/tools/${id}/questions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        label: newQ.label,
+        label:        newQ.label,
         variable_name: newQ.variable_name,
-        field_type: newQ.field_type,
-        options,
-        required: newQ.required,
+        field_type:   newQ.field_type,
+        options:      parsedOptions,
+        required:     newQ.required,
+        scoring_key:  newQ.scoring_key || null,
+        category:     newQ.category    || null,
       }),
     });
     const json = await res.json().catch(() => ({})) as { error?: string };
@@ -123,7 +167,7 @@ export default function QuestionsPage() {
 
   async function moveQuestion(index: number, dir: -1 | 1) {
     const updated = [...questions];
-    const target = index + dir;
+    const target  = index + dir;
     if (target < 0 || target >= updated.length) return;
     [updated[index], updated[target]] = [updated[target], updated[index]];
     const reordered = updated.map((q, i) => ({ ...q, order_index: i }));
@@ -154,10 +198,21 @@ export default function QuestionsPage() {
             {loading ? 'Loading…' : tool?.title}
           </h1>
           <p className="text-sm text-gray-500 mt-0.5">Question Builder</p>
+          {tool && !loading && (
+            <p className="text-xs text-indigo-500 mt-0.5 capitalize">
+              Strategy: {tool.result_strategy?.replace(/_/g, ' ') ?? 'AI Generated'}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {tool && (
             <>
+              <Link
+                href={`/admin/tools/${id}/settings`}
+                className="inline-flex items-center gap-1 text-xs border border-gray-200 rounded-lg px-3 py-1.5 text-gray-500 hover:text-indigo-600 transition-colors"
+              >
+                <Settings size={13} /> Settings
+              </Link>
               <Link
                 href={`/admin/tools/${id}/submissions`}
                 className="inline-flex items-center gap-1 text-xs border border-gray-200 rounded-lg px-3 py-1.5 text-gray-500 hover:text-indigo-600 transition-colors"
@@ -207,8 +262,9 @@ export default function QuestionsPage() {
                 )}
                 {q.variable_name && ' · '}
                 {FIELD_TYPES.find((t) => t.value === q.field_type)?.label}
-                {q.options && ` · ${(q.options as string[]).join(', ')}`}
+                {q.options && ` · ${renderOptionsSummary(q.options as QuestionOption[])}`}
                 {q.required && ' · Required'}
+                {q.category && <span className="text-teal-600"> · {q.category}</span>}
               </p>
             </div>
             <button
@@ -237,8 +293,8 @@ export default function QuestionsPage() {
               autoFocus
               value={newQ.label}
               onChange={(e) => handleLabelChange(e.target.value)}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="e.g. What is your name?"
+              className={cls}
+              placeholder="e.g. What best describes your primary symptoms?"
             />
           </div>
 
@@ -247,11 +303,11 @@ export default function QuestionsPage() {
             <input
               value={newQ.variable_name}
               onChange={(e) => handleVarNameChange(e.target.value)}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="e.g. name"
+              className={`${cls} font-mono`}
+              placeholder="e.g. primary_symptoms"
             />
             <p className="text-xs text-gray-400 mt-1">
-              Must match the <span className="font-mono text-indigo-500">{'{{variable}}'}</span> in your prompt template.
+              Must match <span className="font-mono text-indigo-500">{'{{variable}}'}</span> in your prompt template.
             </p>
           </div>
 
@@ -261,7 +317,7 @@ export default function QuestionsPage() {
               <select
                 value={newQ.field_type}
                 onChange={(e) => setNewQ((q) => ({ ...q, field_type: e.target.value as FieldTypeValue }))}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className={cls}
               >
                 {FIELD_TYPES.map((t) => (
                   <option key={t.value} value={t.value}>{t.label}</option>
@@ -281,16 +337,73 @@ export default function QuestionsPage() {
             </div>
           </div>
 
+          {/* Options */}
           {needsOptions && (
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Options (one per line)</label>
-              <textarea
-                rows={4}
-                value={newQ.options}
-                onChange={(e) => setNewQ((q) => ({ ...q, options: e.target.value }))}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y"
-                placeholder={"Option A\nOption B\nOption C"}
-              />
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-medium text-gray-600">
+                  Options {newQ.useJsonOptions ? '(JSON — supports scores & categories)' : '(one per line)'}
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setNewQ((q) => ({ ...q, useJsonOptions: !q.useJsonOptions }))}
+                  className="text-xs text-indigo-500 hover:text-indigo-700"
+                >
+                  {newQ.useJsonOptions ? 'Switch to simple' : 'Switch to JSON (for scoring)'}
+                </button>
+              </div>
+
+              {newQ.useJsonOptions ? (
+                <textarea
+                  rows={8}
+                  value={newQ.optionsJson}
+                  onChange={(e) => setNewQ((q) => ({ ...q, optionsJson: e.target.value }))}
+                  className={`${cls} resize-y font-mono text-xs`}
+                  placeholder={JSON_OPTIONS_PLACEHOLDER}
+                />
+              ) : (
+                <textarea
+                  rows={4}
+                  value={newQ.options}
+                  onChange={(e) => setNewQ((q) => ({ ...q, options: e.target.value }))}
+                  className={`${cls} resize-y`}
+                  placeholder={"Option A\nOption B\nOption C"}
+                />
+              )}
+            </div>
+          )}
+
+          {/* Scoring fields — shown for structured/hybrid strategies */}
+          {needsScoringFields && (
+            <div className="border-t border-gray-100 pt-4 space-y-3">
+              <p className="text-xs font-medium text-teal-700">Scoring Fields</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">
+                    Scoring Key <span className="text-gray-400">(optional)</span>
+                  </label>
+                  <input
+                    value={newQ.scoring_key}
+                    onChange={(e) => setNewQ((q) => ({ ...q, scoring_key: e.target.value }))}
+                    className={`${cls} font-mono`}
+                    placeholder="e.g. symptom_type"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">
+                    Category Override <span className="text-gray-400">(optional)</span>
+                  </label>
+                  <input
+                    value={newQ.category}
+                    onChange={(e) => setNewQ((q) => ({ ...q, category: e.target.value }))}
+                    className={cls}
+                    placeholder="e.g. hormone_support"
+                  />
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    Applies when options don&apos;t have a category field.
+                  </p>
+                </div>
+              </div>
             </div>
           )}
 
@@ -325,3 +438,6 @@ export default function QuestionsPage() {
     </div>
   );
 }
+
+const cls =
+  'w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500';

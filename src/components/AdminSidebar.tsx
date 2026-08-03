@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { LayoutDashboard, PlusCircle, Building2, Users, LogOut } from 'lucide-react';
+import { LayoutDashboard, PlusCircle, Building2, Users, LogOut, Wand2 } from 'lucide-react';
 import { createBrowserClient } from '@supabase/ssr';
 import Logo from './Logo';
 import type { Profile } from '@/lib/supabase';
@@ -34,8 +34,9 @@ export default function AdminSidebar() {
   const isSuperAdmin = profile?.role === 'super_admin';
 
   const nav = [
-    { href: '/admin',            label: 'Dashboard',  icon: LayoutDashboard, exact: true  },
-    { href: '/admin/tools/new',  label: 'New Tool',   icon: PlusCircle,      exact: false },
+    { href: '/admin',               label: 'Dashboard',   icon: LayoutDashboard, exact: true  },
+    { href: '/admin/tools/new',    label: 'New Tool',    icon: PlusCircle,      exact: false },
+    { href: '/admin/tools/import', label: 'Import Quiz', icon: Wand2,           exact: false },
     ...(isSuperAdmin
       ? [
           { href: '/admin/workspaces', label: 'Workspaces', icon: Building2, exact: false },

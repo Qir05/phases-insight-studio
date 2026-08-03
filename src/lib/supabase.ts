@@ -16,7 +16,44 @@ export function getServiceClient() {
   );
 }
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── Result engine types ───────────────────────────────────────────────────────
+
+export type ResultStrategy =
+  | 'ai_generated'
+  | 'structured_outcome'
+  | 'hybrid_ai_with_outcome';
+
+/** Rich option object with scoring metadata. Backwards-compatible with plain strings. */
+export interface OptionObject {
+  label:     string;
+  value:     string;
+  score?:    number;
+  category?: string;
+}
+
+export type QuestionOption = string | OptionObject;
+
+/** A single scoreable outcome in result_config. */
+export interface Outcome {
+  id:              string;
+  title:           string;
+  description?:    string;
+  match:           { top_category?: string; score_min?: number; score_max?: number };
+  recommendations?: string[];
+  cta_text?:       string;
+  cta_url?:        string;
+}
+
+export interface ResultConfig {
+  outcomes: Outcome[];
+}
+
+export interface ScoringConfig {
+  type:        'category' | 'points';
+  categories?: string[];
+}
+
+// ── Database entity types ─────────────────────────────────────────────────────
 
 export interface Workspace {
   id: string;
@@ -60,7 +97,7 @@ export interface Tool {
   title: string;
   slug: string;
   description: string | null;
-  system_prompt: string;
+  system_prompt: string | null;
   email_capture_enabled: boolean;
   phone_capture_enabled: boolean;
   ghl_enabled: boolean;
@@ -70,6 +107,15 @@ export interface Tool {
   provider_logo_url: string | null;
   primary_color: string | null;
   workspace_id: string | null;
+  tool_mode: 'ai_result' | 'smartform_redirect';
+  webhook_url: string | null;
+  redirect_url: string | null;
+  // Result engine fields (006_result_engine.sql)
+  result_strategy: ResultStrategy;
+  scoring_config:  ScoringConfig | null;
+  result_config:   ResultConfig  | null;
+  result_template: string | null;
+  admin_notes:     string | null;
   created_at: string;
   updated_at: string;
 }
@@ -80,9 +126,13 @@ export interface Question {
   label: string;
   variable_name: string;
   field_type: 'text' | 'textarea' | 'radio' | 'checkbox' | 'dropdown' | 'number';
-  options: string[] | null;
+  /** Can be string[] (legacy) or OptionObject[] (scored options). */
+  options: QuestionOption[] | null;
   required: boolean;
   order_index: number;
+  // Scoring fields (006_result_engine.sql)
+  scoring_key: string | null;
+  category:    string | null;
   created_at: string;
 }
 
@@ -103,5 +153,7 @@ export interface Submission {
   result_token: string;
   ghl_sync_status: 'pending' | 'success' | 'failed' | 'skipped' | null;
   ghl_response: Record<string, unknown> | null;
+  // Structured outcome stored from result engine (006_result_engine.sql)
+  outcome_data: Outcome | null;
   created_at: string;
 }

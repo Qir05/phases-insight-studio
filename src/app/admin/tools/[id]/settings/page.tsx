@@ -1,23 +1,13 @@
 'use client';
-import { memo, useCallback, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { memo, useCallback, useEffect, useState } from 'react';
+import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { toast } from 'sonner';
 import { slugify } from '@/lib/utils';
-import { ArrowLeft, Upload, ChevronDown, ChevronUp } from 'lucide-react';
-import type { ResultStrategy } from '@/lib/supabase';
+import { ArrowLeft, ExternalLink, List, Users } from 'lucide-react';
+import type { ResultStrategy, Tool } from '@/lib/supabase';
 
 type ToolMode = 'ai_result' | 'smartform_redirect';
-
-interface ImportedQuestion {
-  label:         string;
-  variable_name: string;
-  field_type:    string;
-  options?:      unknown[] | null;
-  required?:     boolean;
-  scoring_key?:  string;
-  category?:     string;
-}
 
 const RESULT_STRATEGY_OPTIONS: { value: ResultStrategy; label: string; description: string }[] = [
   {
@@ -59,37 +49,61 @@ const RESULT_CONFIG_PLACEHOLDER = JSON.stringify(
   null, 2
 );
 
-export default function NewToolPage() {
-  const router = useRouter();
-  const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState({
-    title:                  '',
-    description:            '',
-    tool_mode:              'ai_result' as ToolMode,
-    result_strategy:        'ai_generated' as ResultStrategy,
-    system_prompt:          '',
-    result_template:        '',
-    scoring_config:         '',
-    result_config:          '',
-    admin_notes:            '',
-    webhook_url:            '',
-    redirect_url:           '',
-    email_capture_enabled:  true,
-    phone_capture_enabled:  false,
-    ghl_enabled:            false,
-    ghl_webhook_url:        '',
-    ghl_tag:                '',
-    provider_name:          '',
-    provider_logo_url:      '',
-    primary_color:          '',
-  });
+interface FormState {
+  title:                  string;
+  slug:                   string;
+  description:            string;
+  tool_mode:              ToolMode;
+  result_strategy:        ResultStrategy;
+  system_prompt:          string;
+  result_template:        string;
+  scoring_config:         string;
+  result_config:          string;
+  admin_notes:            string;
+  webhook_url:            string;
+  redirect_url:           string;
+  email_capture_enabled:  boolean;
+  phone_capture_enabled:  boolean;
+  ghl_enabled:            boolean;
+  ghl_webhook_url:        string;
+  ghl_tag:                string;
+  provider_name:          string;
+  provider_logo_url:      string;
+  primary_color:          string;
+}
 
-  // Import JSON state
-  const [importJson, setImportJson]           = useState('');
-  const [showImport, setShowImport]           = useState(false);
-  const [importedQuestions, setImportedQuestions] = useState<ImportedQuestion[]>([]);
+const EMPTY_FORM: FormState = {
+  title:                  '',
+  slug:                   '',
+  description:            '',
+  tool_mode:              'ai_result',
+  result_strategy:        'ai_generated',
+  system_prompt:          '',
+  result_template:        '',
+  scoring_config:         '',
+  result_config:          '',
+  admin_notes:            '',
+  webhook_url:            '',
+  redirect_url:           '',
+  email_capture_enabled:  true,
+  phone_capture_enabled:  false,
+  ghl_enabled:            false,
+  ghl_webhook_url:        '',
+  ghl_tag:                '',
+  provider_name:          '',
+  provider_logo_url:      '',
+  primary_color:          '',
+};
 
-  const update = useCallback((key: string, value: string | boolean) => {
+export default function ToolSettingsPage() {
+  const { id } = useParams<{ id: string }>();
+  const [tool, setTool]         = useState<Tool | null>(null);
+  const [loading, setLoading]   = useState(true);
+  const [saving, setSaving]     = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [form, setForm]         = useState<FormState>(EMPTY_FORM);
+
+  const update = useCallback((key: keyof FormState, value: string | boolean) => {
     setForm((f) => ({ ...f, [key]: value }));
   }, []);
 
@@ -97,52 +111,52 @@ export default function NewToolPage() {
   const setPhoneCapture = useCallback((v: boolean) => update('phone_capture_enabled', v), [update]);
   const setGhlEnabled   = useCallback((v: boolean) => update('ghl_enabled', v), [update]);
 
-  const isSmartForm   = form.tool_mode === 'smartform_redirect';
-  const strategy      = form.result_strategy;
-  const needsScoring  = strategy === 'structured_outcome' || strategy === 'hybrid_ai_with_outcome';
-
-  // ── Import JSON handler ───────────────────────────────────────────────────
-  function applyImport() {
-    if (!importJson.trim()) { toast.error('Paste a JSON config first'); return; }
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(importJson);
-    } catch {
-      toast.error('Invalid JSON — check the format and try again');
+  const load = useCallback(async () => {
+    const res  = await fetch(`/api/admin/tools/${id}`);
+    const json = await res.json() as { tool?: Tool; error?: string };
+    if (!res.ok || !json.tool) {
+      toast.error(json.error ?? 'Failed to load tool');
+      setLoading(false);
       return;
     }
+    const t = json.tool;
+    setTool(t);
+    setForm({
+      title:                  t.title                  ?? '',
+      slug:                   t.slug                   ?? '',
+      description:            t.description            ?? '',
+      tool_mode:              t.tool_mode               as ToolMode ?? 'ai_result',
+      result_strategy:        t.result_strategy        ?? 'ai_generated',
+      system_prompt:          t.system_prompt          ?? '',
+      result_template:        t.result_template        ?? '',
+      scoring_config:         t.scoring_config ? JSON.stringify(t.scoring_config, null, 2) : '',
+      result_config:          t.result_config  ? JSON.stringify(t.result_config,  null, 2) : '',
+      admin_notes:            t.admin_notes            ?? '',
+      webhook_url:            t.webhook_url            ?? '',
+      redirect_url:           t.redirect_url           ?? '',
+      email_capture_enabled:  t.email_capture_enabled  ?? true,
+      phone_capture_enabled:  t.phone_capture_enabled  ?? false,
+      ghl_enabled:            t.ghl_enabled            ?? false,
+      ghl_webhook_url:        t.ghl_webhook_url        ?? '',
+      ghl_tag:                t.ghl_tag                ?? '',
+      provider_name:          t.provider_name          ?? '',
+      provider_logo_url:      t.provider_logo_url      ?? '',
+      primary_color:          t.primary_color          ?? '',
+    });
+    setLoading(false);
+  }, [id]);
 
-    setForm((f) => ({
-      ...f,
-      title:           (parsed.title          as string) || f.title,
-      description:     (parsed.description    as string) || f.description,
-      system_prompt:   (parsed.system_prompt  as string) || f.system_prompt,
-      result_template: (parsed.result_template as string) || f.result_template,
-      admin_notes:     (parsed.admin_notes    as string) || f.admin_notes,
-      scoring_config:  parsed.scoring_config
-        ? JSON.stringify(parsed.scoring_config, null, 2)
-        : f.scoring_config,
-      result_config:   parsed.result_config
-        ? JSON.stringify(parsed.result_config, null, 2)
-        : f.result_config,
-      result_strategy: (parsed.result_strategy as ResultStrategy) || f.result_strategy,
-    }));
+  useEffect(() => { load(); }, [load]);
 
-    if (Array.isArray(parsed.questions) && parsed.questions.length > 0) {
-      setImportedQuestions(parsed.questions as ImportedQuestion[]);
-      toast.success(`Config imported — ${(parsed.questions as unknown[]).length} questions queued`);
-    } else {
-      toast.success('Config imported');
-    }
-    setShowImport(false);
-  }
+  const isSmartForm  = form.tool_mode === 'smartform_redirect';
+  const strategy     = form.result_strategy;
+  const needsScoring = strategy === 'structured_outcome' || strategy === 'hybrid_ai_with_outcome';
 
-  // ── Form submit ───────────────────────────────────────────────────────────
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
+    setSaveError(null);
 
-    // Parse JSON fields
     let parsedScoringConfig: unknown = null;
     let parsedResultConfig:  unknown = null;
 
@@ -155,61 +169,48 @@ export default function NewToolPage() {
       catch { toast.error('Result Config is not valid JSON'); setSaving(false); return; }
     }
 
-    const res = await fetch('/api/admin/tools', {
-      method: 'POST',
+    const res = await fetch(`/api/admin/tools/${id}`, {
+      method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ...form,
         provider_name:     form.provider_name     || null,
         provider_logo_url: form.provider_logo_url || null,
         primary_color:     form.primary_color     || null,
-        webhook_url:       form.webhook_url        || null,
-        redirect_url:      form.redirect_url       || null,
-        system_prompt:     form.system_prompt      || null,
-        result_template:   form.result_template    || null,
-        admin_notes:       form.admin_notes        || null,
-        scoring_config:    parsedScoringConfig,
-        result_config:     parsedResultConfig,
+        webhook_url:        form.webhook_url        || null,
+        redirect_url:       form.redirect_url       || null,
+        system_prompt:      form.system_prompt      || null,
+        result_template:    form.result_template    || null,
+        admin_notes:        form.admin_notes        || null,
+        scoring_config:     parsedScoringConfig,
+        result_config:      parsedResultConfig,
       }),
     });
-    const json = await res.json();
+    const json = await res.json().catch(() => ({})) as { tool?: Tool; error?: string };
+    setSaving(false);
+
     if (!res.ok) {
-      toast.error(json.error ?? 'Failed to create tool');
-      setSaving(false);
+      setSaveError(json.error ?? 'Failed to save settings');
+      toast.error(json.error ?? 'Failed to save settings');
       return;
     }
 
-    const toolId = json.tool.id as string;
+    toast.success('Settings saved');
+    load();
+  }
 
-    // Bulk-create imported questions if any
-    if (importedQuestions.length > 0) {
-      for (const q of importedQuestions) {
-        await fetch(`/api/admin/tools/${toolId}/questions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            label:        q.label,
-            variable_name: q.variable_name,
-            field_type:   q.field_type || 'radio',
-            options:      q.options ?? null,
-            required:     q.required ?? true,
-            scoring_key:  q.scoring_key ?? null,
-            category:     q.category    ?? null,
-          }),
-        });
-      }
-      toast.success(`Tool created with ${importedQuestions.length} questions!`);
-    } else {
-      toast.success('Tool created!');
-    }
-
-    setSaving(false);
-    router.push(`/admin/tools/${toolId}/questions`);
+  if (loading) {
+    return (
+      <div className="max-w-2xl animate-pulse space-y-4">
+        <div className="h-6 bg-gray-100 rounded w-40" />
+        <div className="h-48 bg-gray-100 rounded-2xl" />
+        <div className="h-48 bg-gray-100 rounded-2xl" />
+      </div>
+    );
   }
 
   return (
     <div className="max-w-2xl">
-      {/* Back */}
       <Link
         href="/admin"
         className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-800 mb-6 transition-colors"
@@ -217,49 +218,41 @@ export default function NewToolPage() {
         <ArrowLeft size={15} /> Back to Dashboard
       </Link>
 
-      <h1 className="text-2xl font-bold text-gray-900 mb-1">Create New Tool</h1>
-      <p className="text-sm text-gray-500 mb-8">Set up your AI assessment or scored quiz.</p>
-
-      {/* ── Import JSON ──────────────────────────────────────────────────────── */}
-      <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-4 mb-6">
-        <button
-          type="button"
-          onClick={() => setShowImport((v) => !v)}
-          className="flex items-center gap-2 text-sm font-medium text-indigo-700 w-full"
-        >
-          <Upload size={15} />
-          Import from FormWise / JSON config
-          {showImport ? <ChevronUp size={15} className="ml-auto" /> : <ChevronDown size={15} className="ml-auto" />}
-        </button>
-
-        {showImport && (
-          <div className="mt-3 space-y-3">
-            <p className="text-xs text-indigo-600">
-              Paste a config JSON to pre-fill all fields and import questions in one step.
-              Supported keys: <code>title, description, system_prompt, result_template, result_strategy, scoring_config, result_config, admin_notes, questions[]</code>
-            </p>
-            <textarea
-              rows={8}
-              value={importJson}
-              onChange={(e) => setImportJson(e.target.value)}
-              className="w-full border border-indigo-200 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y bg-white"
-              placeholder={'{\n  "title": "Menopause Type Quiz",\n  "result_strategy": "hybrid_ai_with_outcome",\n  "questions": [],\n  "scoring_config": {},\n  "result_config": {}\n}'}
-            />
-            <button
-              type="button"
-              onClick={applyImport}
-              className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors"
+      <div className="flex items-start justify-between mb-6 gap-4">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-bold text-gray-900 truncate">{tool?.title}</h1>
+          <p className="text-sm text-gray-500 mt-0.5">Tool Settings</p>
+        </div>
+        {tool && (
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <Link
+              href={`/admin/tools/${id}/questions`}
+              className="inline-flex items-center gap-1 text-xs border border-gray-200 rounded-lg px-3 py-1.5 text-gray-500 hover:text-indigo-600 transition-colors"
             >
-              Apply Import
-            </button>
-            {importedQuestions.length > 0 && (
-              <p className="text-xs text-indigo-700">
-                {importedQuestions.length} question(s) queued — will be created after tool save.
-              </p>
-            )}
+              <List size={13} /> Questions
+            </Link>
+            <Link
+              href={`/admin/tools/${id}/submissions`}
+              className="inline-flex items-center gap-1 text-xs border border-gray-200 rounded-lg px-3 py-1.5 text-gray-500 hover:text-indigo-600 transition-colors"
+            >
+              <Users size={13} /> Submissions
+            </Link>
+            <Link
+              href={`/t/${tool.slug}`}
+              target="_blank"
+              className="inline-flex items-center gap-1 text-xs border border-gray-200 rounded-lg px-3 py-1.5 text-gray-500 hover:text-indigo-600 transition-colors"
+            >
+              <ExternalLink size={13} /> Preview
+            </Link>
           </div>
         )}
       </div>
+
+      {saveError && (
+        <div className="bg-red-50 border border-red-100 rounded-2xl px-4 py-3 text-sm text-red-700 mb-6">
+          {saveError}
+        </div>
+      )}
 
       <form onSubmit={submit} className="space-y-6">
 
@@ -273,11 +266,21 @@ export default function NewToolPage() {
               value={form.title}
               onChange={(e) => update('title', e.target.value)}
               className={input}
-              placeholder="e.g. Menopause Type Quiz"
             />
-            {form.title && (
-              <p className="text-xs text-gray-400 mt-1">Slug: /t/{slugify(form.title)}</p>
-            )}
+          </Field>
+
+          <Field
+            label="Slug *"
+            hint="This tool's public URL is /t/{slug}. Changing it will break any previously shared links."
+          >
+            <input
+              required
+              value={form.slug}
+              onChange={(e) => update('slug', e.target.value)}
+              className={`${input} font-mono`}
+              placeholder={slugify(form.title)}
+            />
+            <p className="text-xs text-gray-400 mt-1">/t/{slugify(form.slug) || slugify(form.title)}</p>
           </Field>
 
           <Field label="Description">
@@ -308,7 +311,6 @@ export default function NewToolPage() {
             </select>
           </Field>
 
-          {/* SmartForm fields */}
           {isSmartForm && (
             <>
               <Field label="Webhook URL *" hint="POST request sent with all answers after submission.">
@@ -341,7 +343,6 @@ export default function NewToolPage() {
             </>
           )}
 
-          {/* AI Result strategy selector */}
           {!isSmartForm && (
             <Field label="Result Strategy *" hint="Controls how the result is generated after scoring.">
               <select
@@ -360,7 +361,7 @@ export default function NewToolPage() {
           )}
         </section>
 
-        {/* Scoring config — structured_outcome and hybrid */}
+        {/* Scoring config */}
         {!isSmartForm && needsScoring && (
           <section className="bg-white rounded-2xl border border-gray-100 p-6 space-y-4">
             <div>
@@ -409,16 +410,16 @@ export default function NewToolPage() {
             {strategy !== 'structured_outcome' && (
               <>
                 <Field
-                  label={strategy === 'hybrid_ai_with_outcome' ? 'Result Template' : 'System Prompt *'}
+                  label={strategy === 'hybrid_ai_with_outcome' ? 'Result Template' : 'System Prompt'}
                   hint={
                     strategy === 'hybrid_ai_with_outcome'
                       ? 'Instructions for personalising the calculated outcome. The outcome type is fixed — the AI only personalises it.'
-                      : 'The AI uses this to generate the personalised result. Include {{variable}} placeholders to inject answers.'
+                      : 'The AI uses this to generate the personalised result.'
                   }
                 >
                   <textarea
                     rows={6}
-                    value={form.result_template || form.system_prompt}
+                    value={strategy === 'hybrid_ai_with_outcome' ? form.result_template : form.system_prompt}
                     onChange={(e) => {
                       if (strategy === 'hybrid_ai_with_outcome') {
                         update('result_template', e.target.value);
@@ -511,7 +512,7 @@ export default function NewToolPage() {
           <Toggle label="Capture phone number"  checked={form.phone_capture_enabled} onChange={setPhoneCapture} />
         </section>
 
-        {/* GHL — only relevant for AI Result mode */}
+        {/* GHL */}
         {!isSmartForm && (
           <section className="bg-white rounded-2xl border border-gray-100 p-6 space-y-4">
             <div className="flex items-center justify-between">
@@ -546,7 +547,7 @@ export default function NewToolPage() {
           disabled={saving}
           className="w-full bg-indigo-600 text-white py-3 rounded-xl font-semibold hover:bg-indigo-700 disabled:opacity-60 transition-colors"
         >
-          {saving ? 'Creating…' : 'Create Tool & Add Questions →'}
+          {saving ? 'Saving…' : 'Save Changes'}
         </button>
       </form>
     </div>

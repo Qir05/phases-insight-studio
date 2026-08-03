@@ -61,12 +61,22 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const { label, variable_name, field_type, options, required } = body as {
-    label?: string;
+  const {
+    label,
+    variable_name,
+    field_type,
+    options,
+    required,
+    scoring_key,
+    category,
+  } = body as {
+    label?:        string;
     variable_name?: string;
-    field_type?: string;
-    options?: string[] | null;
-    required?: boolean;
+    field_type?:   string;
+    options?:      unknown[] | null;
+    required?:     boolean;
+    scoring_key?:  string;
+    category?:     string;
   };
 
   if (!label)      return NextResponse.json({ error: 'label is required' }, { status: 400 });
@@ -105,13 +115,15 @@ export async function POST(
   const { data, error } = await db
     .from('questions')
     .insert({
-      tool_id: params.id,
+      tool_id:      params.id,
       label,
       variable_name: (variable_name ?? '').trim(),
       field_type,
-      options: normalisedOptions,
-      required: required ?? true,
-      order_index: nextIdx,
+      options:      normalisedOptions,
+      required:     required ?? true,
+      order_index:  nextIdx,
+      scoring_key:  scoring_key ?? null,
+      category:     category    ?? null,
     })
     .select()
     .single();
