@@ -1,11 +1,12 @@
 'use client';
-import { memo, useCallback, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { toast } from 'sonner';
 import { slugify } from '@/lib/utils';
-import { ArrowLeft, ExternalLink, List, Users } from 'lucide-react';
-import type { ResultStrategy, Tool } from '@/lib/supabase';
+import { ArrowLeft, ExternalLink, List, Users, AlertTriangle, Sparkles, Loader2 } from 'lucide-react';
+import type { ResultStrategy, ScoringConfig, ResultConfig, Tool, Question } from '@/lib/supabase';
+import { validateResultConfig } from '@/lib/resultConfigValidation';
 
 type ToolMode = 'ai_result' | 'smartform_redirect';
 
@@ -98,10 +99,16 @@ const EMPTY_FORM: FormState = {
 export default function ToolSettingsPage() {
   const { id } = useParams<{ id: string }>();
   const [tool, setTool]         = useState<Tool | null>(null);
+  const [questions, setQuestions] = useState<Question[]>([]);
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [form, setForm]         = useState<FormState>(EMPTY_FORM);
+
+  // ── Migration Assistant (draft result config inferred from existing questions) ──
+  const [inferring,    setInferring]    = useState(false);
+  const [draftPreview, setDraftPreview] = useState<string | null>(null);
+  const [draftError,   setDraftError]   = useState<string | null>(null);
 
   const update = useCallback((key: keyof FormState, value: string | boolean) => {
     setForm((f) => ({ ...f, [key]: value }));
@@ -112,8 +119,14 @@ export default function ToolSettingsPage() {
   const setGhlEnabled   = useCallback((v: boolean) => update('ghl_enabled', v), [update]);
 
   const load = useCallback(async () => {
-    const res  = await fetch(`/api/admin/tools/${id}`);
-    const json = await res.json() as { tool?: Tool; error?: string };
+    const [res, qRes] = await Promise.all([
+      fetch(`/api/admin/tools/${id}`),
+      fetch(`/api/admin/tools/${id}/questions`),
+    ]);
+    const json  = await res.json()  as { tool?: Tool; error?: string };
+    const qJson = await qRes.json().catch(() => ({})) as { questions?: Question[] };
+    setQuestions(Array.isArray(qJson.questions) ? qJson.questions : []);
+
     if (!res.ok || !json.tool) {
       toast.error(json.error ?? 'Failed to load tool');
       setLoading(false);
@@ -151,6 +164,69 @@ export default function ToolSettingsPage() {
   const isSmartForm  = form.tool_mode === 'smartform_redirect';
   const strategy     = form.result_strategy;
   const needsScoring = strategy === 'structured_outcome' || strategy === 'hybrid_ai_with_outcome';
+
+  // Migration Assistant applies only to the exact "never configured" state.
+  const needsMigrationAssistant =
+    !isSmartForm &&
+    strategy === 'ai_generated' &&
+    !form.scoring_config.trim() &&
+    !form.result_config.trim() &&
+    !form.result_template.trim();
+
+  // Live, non-blocking validation — shown to the admin, never blocks Save
+  // (the PUT route still hard-blocks genuinely broken config server-side).
+  const liveValidation = useMemo(() => {
+    if (isSmartForm || !needsScoring) return { errors: [] as string[], warnings: [] as string[] };
+
+    let parsedScoring: ScoringConfig | null = null;
+    let parsedResult:  ResultConfig  | null = null;
+    try { parsedScoring = form.scoring_config.trim() ? JSON.parse(form.scoring_config) : null; } catch { /* reported by submit() */ }
+    try { parsedResult  = form.result_config.trim()  ? JSON.parse(form.result_config)  : null; } catch { /* reported by submit() */ }
+
+    return validateResultConfig(
+      form.tool_mode,
+      strategy,
+      parsedScoring,
+      parsedResult,
+      questions.map((q) => ({ options: q.options })),
+    );
+  }, [isSmartForm, needsScoring, form.tool_mode, strategy, form.scoring_config, form.result_config, questions]);
+
+  async function generateDraftResultConfig() {
+    setInferring(true);
+    setDraftError(null);
+    const res  = await fetch(`/api/admin/tools/${id}/infer-result-config`, { method: 'POST' });
+    const json = await res.json().catch(() => ({})) as { draft?: unknown; error?: string };
+    setInferring(false);
+
+    if (!res.ok || !json.draft) {
+      setDraftError(json.error ?? 'Failed to generate a draft. Please try again.');
+      return;
+    }
+    setDraftPreview(JSON.stringify(json.draft, null, 2));
+  }
+
+  function applyDraftToForm() {
+    if (!draftPreview) return;
+    let draft: { scoring_config?: unknown; result_config?: unknown; result_template?: string };
+    try {
+      draft = JSON.parse(draftPreview);
+    } catch {
+      setDraftError('The draft JSON is not valid — fix any syntax errors before applying.');
+      return;
+    }
+
+    setForm((f) => ({
+      ...f,
+      result_strategy: 'hybrid_ai_with_outcome',
+      scoring_config:  draft.scoring_config  ? JSON.stringify(draft.scoring_config, null, 2) : f.scoring_config,
+      result_config:   draft.result_config   ? JSON.stringify(draft.result_config,  null, 2) : f.result_config,
+      result_template: draft.result_template ?? f.result_template,
+    }));
+    setDraftPreview(null);
+    setDraftError(null);
+    toast.success('Draft applied below — review it, then click Save Changes to publish.');
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -361,6 +437,75 @@ export default function ToolSettingsPage() {
           )}
         </section>
 
+        {/* Migration Assistant — only for tools that have never been configured */}
+        {needsMigrationAssistant && (
+          <section className="bg-amber-50 border border-amber-200 rounded-2xl p-6 space-y-4">
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle size={16} className="text-amber-500 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-semibold text-amber-800">This tool is missing result configuration.</p>
+                <p className="text-xs text-amber-700 mt-0.5">
+                  It will fall back to plain AI text (or a config error) until a result strategy is set up.
+                  {questions.length === 0 && ' Add questions to this tool first — the assistant reads your existing questions and options.'}
+                </p>
+              </div>
+            </div>
+
+            {!draftPreview && (
+              <button
+                type="button"
+                onClick={generateDraftResultConfig}
+                disabled={inferring || questions.length === 0}
+                className="inline-flex items-center gap-2 bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {inferring ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
+                {inferring ? 'Analyzing existing questions…' : 'Generate Draft Result Config'}
+              </button>
+            )}
+
+            {draftError && (
+              <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{draftError}</p>
+            )}
+
+            {draftPreview && (
+              <div className="space-y-3">
+                <div className="bg-amber-100 border border-amber-200 rounded-lg px-3 py-2">
+                  <p className="text-xs font-semibold text-amber-800">Draft — review before publishing.</p>
+                  <p className="text-xs text-amber-700 mt-0.5">
+                    Inferred only from this tool&apos;s existing questions and options. This is <strong>not</strong> confirmed FormWise copy — read it carefully, edit anything wrong, and only then apply it below.
+                  </p>
+                </div>
+                <textarea
+                  rows={16}
+                  value={draftPreview}
+                  onChange={(e) => setDraftPreview(e.target.value)}
+                  className="w-full border border-amber-200 rounded-xl px-4 py-3 text-xs font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-amber-500 resize-y bg-white"
+                  spellCheck={false}
+                />
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={applyDraftToForm}
+                    className="flex-1 bg-amber-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-amber-700 transition-colors"
+                  >
+                    Apply to Form Below
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setDraftPreview(null); setDraftError(null); }}
+                    className="px-4 py-2 text-sm text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 transition-colors"
+                  >
+                    Discard
+                  </button>
+                </div>
+                <p className="text-xs text-amber-600">
+                  Applying only fills in the fields below — nothing is saved until you click <strong>Save Changes</strong> at the bottom of this page.
+                </p>
+              </div>
+            )}
+          </section>
+        )}
+
         {/* Scoring config */}
         {!isSmartForm && needsScoring && (
           <section className="bg-white rounded-2xl border border-gray-100 p-6 space-y-4">
@@ -390,6 +535,23 @@ export default function ToolSettingsPage() {
                 placeholder={RESULT_CONFIG_PLACEHOLDER}
               />
             </Field>
+
+            {liveValidation.errors.length > 0 && (
+              <div className="bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">
+                <p className="text-xs font-medium text-red-700 mb-1">Must fix before this will work:</p>
+                <ul className="text-xs text-red-600 list-disc list-inside space-y-0.5">
+                  {liveValidation.errors.map((e, i) => <li key={i}>{e}</li>)}
+                </ul>
+              </div>
+            )}
+            {liveValidation.warnings.length > 0 && (
+              <div className="bg-amber-50 border border-amber-100 rounded-lg px-3 py-2.5">
+                <p className="text-xs font-medium text-amber-700 mb-1">Worth a look (won&apos;t block saving):</p>
+                <ul className="text-xs text-amber-600 list-disc list-inside space-y-0.5">
+                  {liveValidation.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                </ul>
+              </div>
+            )}
           </section>
         )}
 

@@ -14,6 +14,7 @@ function buildUserPrompt(sourceLabel: string, text: string): string {
 EXACT OUTPUT SCHEMA (respond with this exact structure):
 {
   "title": "Quiz title string",
+  "slug": "url-friendly-slug-derived-from-title",
   "description": "One sentence shown to quiz takers",
   "result_strategy": "hybrid_ai_with_outcome" | "structured_outcome" | "ai_generated",
   "system_prompt": "AI system context (for ai_generated strategy, null otherwise)" | null,

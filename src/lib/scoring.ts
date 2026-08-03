@@ -38,8 +38,35 @@ function matchesOption(opt: QuestionOption, answer: string): boolean {
   return opt === answer;
 }
 
-function findOption(opts: QuestionOption[], answer: string): QuestionOption | undefined {
+export function findOption(opts: QuestionOption[], answer: string): QuestionOption | undefined {
   return opts.find((o) => matchesOption(o, answer));
+}
+
+/** Tally how many answers fall into each category — shared by category scoring and the admin test harness. */
+export function computeCategoryCounts(answers: AnswerMap, questions: Question[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+
+  for (const question of questions) {
+    const opts = question.options as QuestionOption[] | null;
+    if (!opts || opts.length === 0) continue;
+
+    const answer = answers[question.label] ?? answers[question.variable_name];
+    if (!answer) continue;
+
+    const answerValues = Array.isArray(answer) ? answer : [answer];
+
+    for (const ansVal of answerValues) {
+      const matched = findOption(opts, ansVal);
+      const cat = matched
+        ? getOptionCategory(matched) ?? question.category
+        : question.category;
+      if (cat) {
+        counts[cat] = (counts[cat] ?? 0) + 1;
+      }
+    }
+  }
+
+  return counts;
 }
 
 // ── Outcome calculation ───────────────────────────────────────────────────────
@@ -70,28 +97,7 @@ function calculateCategoryOutcome(
   questions: Question[],
   result_config: ResultConfig,
 ): Outcome | null {
-  const counts: Record<string, number> = {};
-
-  for (const question of questions) {
-    const opts = question.options as QuestionOption[] | null;
-    if (!opts || opts.length === 0) continue;
-
-    // Answers are keyed by question label or variable_name
-    const answer = answers[question.label] ?? answers[question.variable_name];
-    if (!answer) continue;
-
-    const answerValues = Array.isArray(answer) ? answer : [answer];
-
-    for (const ansVal of answerValues) {
-      const matched = findOption(opts, ansVal);
-      const cat = matched
-        ? getOptionCategory(matched) ?? question.category
-        : question.category;
-      if (cat) {
-        counts[cat] = (counts[cat] ?? 0) + 1;
-      }
-    }
-  }
+  const counts = computeCategoryCounts(answers, questions);
 
   // Find the top category
   let topCategory: string | undefined;

@@ -3,6 +3,7 @@ import { requireAuth } from '@/lib/auth';
 import { getServiceClient } from '@/lib/supabase';
 import type { ResultStrategy, ScoringConfig, ResultConfig } from '@/lib/supabase';
 import { slugify } from '@/lib/utils';
+import { validateResultConfig } from '@/lib/resultConfigValidation';
 
 const VALID_STRATEGIES: ResultStrategy[] = [
   'ai_generated',
@@ -137,6 +138,8 @@ export async function PUT(
       ? (result_strategy as ResultStrategy)
       : 'ai_generated';
 
+  let warnings: string[] = [];
+
   if (resolvedMode === 'smartform_redirect') {
     if (!webhook_url || !webhook_url.trim()) {
       return NextResponse.json({ error: 'Webhook URL is required for SmartForm Redirect mode' }, { status: 400 });
@@ -145,24 +148,23 @@ export async function PUT(
       return NextResponse.json({ error: 'Redirect URL is required for SmartForm Redirect mode' }, { status: 400 });
     }
   } else if (resolvedStrategy === 'structured_outcome' || resolvedStrategy === 'hybrid_ai_with_outcome') {
-    if (!scoring_config || typeof scoring_config !== 'object' || Array.isArray(scoring_config)) {
-      return NextResponse.json(
-        { error: 'scoring_config is required for structured_outcome / hybrid_ai_with_outcome result strategy' },
-        { status: 400 }
-      );
+    if (scoring_config !== null && scoring_config !== undefined && (typeof scoring_config !== 'object' || Array.isArray(scoring_config))) {
+      return NextResponse.json({ error: 'scoring_config must be a JSON object' }, { status: 400 });
     }
-    if (scoring_config.type !== 'category' && scoring_config.type !== 'points') {
-      return NextResponse.json({ error: "scoring_config.type must be 'category' or 'points'" }, { status: 400 });
+    if (result_config !== null && result_config !== undefined && (typeof result_config !== 'object' || Array.isArray(result_config))) {
+      return NextResponse.json({ error: 'result_config must be a JSON object' }, { status: 400 });
     }
-    if (!result_config || typeof result_config !== 'object' || Array.isArray(result_config)) {
-      return NextResponse.json(
-        { error: 'result_config is required for structured_outcome / hybrid_ai_with_outcome result strategy' },
-        { status: 400 }
-      );
+
+    const { errors: configErrors, warnings: configWarnings } = validateResultConfig(
+      resolvedMode,
+      resolvedStrategy,
+      scoring_config ?? null,
+      result_config ?? null,
+    );
+    if (configErrors.length > 0) {
+      return NextResponse.json({ error: configErrors[0], errors: configErrors }, { status: 400 });
     }
-    if (!Array.isArray(result_config.outcomes) || result_config.outcomes.length === 0) {
-      return NextResponse.json({ error: 'result_config.outcomes must be a non-empty array' }, { status: 400 });
-    }
+    warnings = configWarnings;
   } else if (resolvedStrategy === 'ai_generated') {
     const hasSystemPrompt   = typeof system_prompt   === 'string' && system_prompt.trim().length   > 0;
     const hasResultTemplate = typeof result_template === 'string' && result_template.trim().length > 0;
@@ -223,7 +225,7 @@ export async function PUT(
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ tool: data });
+  return NextResponse.json({ tool: data, warnings });
 }
 
 export async function DELETE(

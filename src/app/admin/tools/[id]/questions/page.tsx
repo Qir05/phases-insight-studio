@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import { Plus, Trash2, GripVertical, ExternalLink, ArrowLeft, Users, Settings } from 'lucide-react';
 import { getOptionLabel } from '@/lib/scoring';
 import type { QuestionOption } from '@/lib/supabase';
+import TestOutcomeMapping from '@/components/TestOutcomeMapping';
 
 const FIELD_TYPES = [
   { value: 'text',      label: 'Text input' },
@@ -422,6 +423,17 @@ export default function QuestionsPage() {
               Cancel
             </button>
           </div>
+        </div>
+      )}
+
+      {needsScoringFields && questions.length > 0 && tool && (
+        <div className="mt-6">
+          <TestOutcomeMapping
+            questions={questions}
+            scoringConfig={tool.scoring_config}
+            resultConfig={tool.result_config}
+            resultStrategy={tool.result_strategy}
+          />
         </div>
       )}
 

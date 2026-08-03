@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { Tool } from '@/lib/supabase';
 import { PlusCircle, ExternalLink, List, Users, Trash2, BarChart3, Layers, Settings } from 'lucide-react';
 import { toast } from 'sonner';
+import { computeConfigStatus, type ConfigStatus } from '@/lib/resultConfigValidation';
 
 type ToolWithCounts = Tool & {
   submissions?: [{ count: number }];
@@ -12,6 +13,45 @@ type ToolWithCounts = Tool & {
 
 function subCount(t: ToolWithCounts) { return t.submissions?.[0]?.count ?? 0; }
 function qCount(t: ToolWithCounts)   { return t.questions?.[0]?.count ?? 0; }
+
+const TOOL_MODE_LABEL: Record<string, string> = {
+  ai_result:          'AI Result',
+  smartform_redirect: 'SmartForm Redirect',
+};
+
+const STRATEGY_LABEL: Record<string, string> = {
+  ai_generated:            'AI Generated',
+  structured_outcome:      'Structured Outcome',
+  hybrid_ai_with_outcome:  'Hybrid',
+};
+
+const CONFIG_STATUS_STYLE: Record<ConfigStatus, { label: string; className: string }> = {
+  configured: { label: 'Configured',            className: 'bg-green-50 text-green-700' },
+  missing:    { label: 'Missing result config', className: 'bg-red-50 text-red-600' },
+  draft:      { label: 'Draft',                 className: 'bg-amber-50 text-amber-700' },
+  redirect:   { label: 'Redirect tool',         className: 'bg-gray-100 text-gray-500' },
+};
+
+function ToolBadges({ tool }: { tool: ToolWithCounts }) {
+  const status = computeConfigStatus(tool);
+  const { label: statusLabel, className: statusClass } = CONFIG_STATUS_STYLE[status];
+
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
+      <span className="text-[11px] px-2 py-0.5 rounded-full font-medium bg-indigo-50 text-indigo-600">
+        {TOOL_MODE_LABEL[tool.tool_mode] ?? tool.tool_mode}
+      </span>
+      {tool.tool_mode !== 'smartform_redirect' && (
+        <span className="text-[11px] px-2 py-0.5 rounded-full font-medium bg-gray-100 text-gray-500">
+          {STRATEGY_LABEL[tool.result_strategy] ?? tool.result_strategy}
+        </span>
+      )}
+      <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${statusClass}`}>
+        {statusLabel}
+      </span>
+    </div>
+  );
+}
 
 export default function AdminDashboard() {
   const [tools, setTools] = useState<ToolWithCounts[]>([]);
@@ -118,6 +158,7 @@ export default function AdminDashboard() {
                     /t/{tool.slug}
                     {tool.description && ` · ${tool.description}`}
                   </p>
+                  <ToolBadges tool={tool} />
                   <div className="flex items-center gap-3 mt-2">
                     <span className="text-xs text-gray-400">
                       <span className="font-medium text-gray-600">{qCount(tool)}</span> questions

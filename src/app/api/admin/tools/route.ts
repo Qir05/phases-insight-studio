@@ -3,6 +3,7 @@ import { requireAuth } from '@/lib/auth';
 import { getServiceClient } from '@/lib/supabase';
 import type { ResultStrategy } from '@/lib/supabase';
 import { slugify } from '@/lib/utils';
+import { validateResultConfig } from '@/lib/resultConfigValidation';
 
 const VALID_STRATEGIES: ResultStrategy[] = [
   'ai_generated',
@@ -40,7 +41,7 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json();
   const {
-    title, description, system_prompt,
+    title, slug: requestedSlug, description, system_prompt,
     email_capture_enabled, phone_capture_enabled,
     ghl_enabled, ghl_webhook_url, ghl_tag,
     provider_name, provider_logo_url, primary_color,
@@ -65,6 +66,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'title is required' }, { status: 400 });
   }
 
+  if (resolvedMode !== 'smartform_redirect') {
+    const { errors: configErrors } = validateResultConfig(
+      resolvedMode,
+      resolvedStrategy,
+      scoring_config ?? null,
+      result_config ?? null,
+    );
+    if (configErrors.length > 0) {
+      return NextResponse.json({ error: configErrors[0], errors: configErrors }, { status: 400 });
+    }
+  }
+
   // Workspace assignment: provider_admin is always locked to their own workspace
   const workspace_id =
     auth.profile.role === 'provider_admin'
@@ -72,7 +85,15 @@ export async function POST(req: NextRequest) {
       : (requestedWorkspaceId ?? null);
 
   const db   = getServiceClient();
-  const slug = slugify(title);
+  const slug = slugify((requestedSlug && String(requestedSlug).trim()) || title);
+  if (!slug) {
+    return NextResponse.json({ error: 'Slug must contain at least one letter or number' }, { status: 400 });
+  }
+
+  const { data: slugConflict } = await db.from('tools').select('id').eq('slug', slug).maybeSingle();
+  if (slugConflict) {
+    return NextResponse.json({ error: `Slug "${slug}" is already in use by another tool` }, { status: 409 });
+  }
 
   const { data, error } = await db
     .from('tools')

@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -9,16 +9,20 @@ import {
   Wand2,
   CheckCircle,
   AlertCircle,
+  AlertTriangle,
   Loader2,
   ChevronRight,
   RotateCcw,
   PenSquare,
+  Braces,
 } from 'lucide-react';
+import { validateResultConfig } from '@/lib/resultConfigValidation';
+import type { ResultStrategy, ScoringConfig, ResultConfig, QuestionOption } from '@/lib/supabase';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type WizardStep = 'input' | 'generating' | 'review' | 'saving' | 'done';
-type InputMode  = 'paste' | 'file';
+type InputMode  = 'paste' | 'file' | 'json';
 
 interface ImportedQuestion {
   label:         string;
@@ -32,6 +36,7 @@ interface ImportedQuestion {
 
 interface DraftConfig {
   title:           string;
+  slug?:           string;
   description?:    string;
   result_strategy: string;
   system_prompt?:  string | null;
@@ -111,6 +116,7 @@ export default function ImportToolPage() {
   const [sourceLabel, setSourceLabel] = useState(SOURCE_LABELS[0].value);
   const [pasteText,   setPasteText]   = useState('');
   const [fileName,    setFileName]    = useState('');
+  const [jsonText,    setJsonText]    = useState('');
   const [draftJson,   setDraftJson]   = useState('');
   const [draftTitle,  setDraftTitle]  = useState('');
   const [draftQCount, setDraftQCount] = useState(0);
@@ -205,6 +211,64 @@ export default function ImportToolPage() {
     }
   }
 
+  // ── Load a raw JSON config directly (skips the AI call entirely) ─────────────
+
+  function loadJsonDraft() {
+    if (!jsonText.trim()) {
+      setError('Paste a JSON config first.');
+      return;
+    }
+
+    let config: DraftConfig;
+    try {
+      config = JSON.parse(jsonText) as DraftConfig;
+    } catch {
+      setError('The pasted JSON is not valid. Fix any syntax errors and try again.');
+      return;
+    }
+
+    if (!config.title || typeof config.title !== 'string') {
+      setError('The pasted JSON is missing a "title" field.');
+      return;
+    }
+
+    setError('');
+    setDraftJson(JSON.stringify(config, null, 2));
+    setDraftTitle(config.title);
+    setDraftQCount(Array.isArray(config.questions) ? config.questions.length : 0);
+    setStep('review');
+  }
+
+  // ── Live validation of the draft JSON (gates the Create button) ──────────────
+
+  const draftValidation = useMemo(() => {
+    let config: DraftConfig | null = null;
+    try {
+      config = JSON.parse(draftJson) as DraftConfig;
+    } catch {
+      return { parseError: 'The JSON is not valid — fix syntax errors before saving.', errors: [] as string[], warnings: [] as string[] };
+    }
+
+    if (!config?.title?.trim()) {
+      return { parseError: null, errors: ['Missing "title".'], warnings: [] as string[] };
+    }
+
+    const questions = Array.isArray(config.questions) ? config.questions : [];
+    const { errors, warnings } = validateResultConfig(
+      'ai_result',
+      (config.result_strategy as ResultStrategy) ?? 'ai_generated',
+      (config.scoring_config as ScoringConfig | null) ?? null,
+      (config.result_config as ResultConfig | null) ?? null,
+      questions.map((q) => ({ options: (q.options as QuestionOption[] | null) ?? null })),
+    );
+
+    if (questions.length === 0) {
+      errors.push('No questions in the config.');
+    }
+
+    return { parseError: null, errors, warnings };
+  }, [draftJson]);
+
   // ── Create tool ─────────────────────────────────────────────────────────────
 
   async function createTool() {
@@ -221,6 +285,11 @@ export default function ImportToolPage() {
       return;
     }
 
+    if (draftValidation.errors.length > 0) {
+      setError('Fix the issues listed above before creating this tool.');
+      return;
+    }
+
     setError('');
     setStep('saving');
 
@@ -230,6 +299,7 @@ export default function ImportToolPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         title:           config.title,
+        slug:            config.slug            ?? null,
         description:     config.description     ?? null,
         system_prompt:   config.system_prompt   ?? null,
         result_strategy: config.result_strategy ?? 'ai_generated',
@@ -332,26 +402,38 @@ export default function ImportToolPage() {
                 <Upload size={14} className="inline-block mr-1.5 -mt-0.5" />
                 Upload File
               </button>
+              <button
+                type="button"
+                onClick={() => { setInputMode('json'); setError(''); }}
+                className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                  inputMode === 'json' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <Braces size={14} className="inline-block mr-1.5 -mt-0.5" />
+                Paste JSON Config
+              </button>
             </div>
 
-            {/* Source label */}
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">
-                What type of content is this?
-              </label>
-              <select
-                value={sourceLabel}
-                onChange={(e) => setSourceLabel(e.target.value)}
-                className={input}
-              >
-                {SOURCE_LABELS.map((s) => (
-                  <option key={s.value} value={s.value}>{s.label}</option>
-                ))}
-              </select>
-              <p className="text-xs text-gray-400 mt-1">
-                Helps the AI understand context and generate a better quiz structure.
-              </p>
-            </div>
+            {/* Source label — not applicable when pasting a ready-made JSON config */}
+            {inputMode !== 'json' && (
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  What type of content is this?
+                </label>
+                <select
+                  value={sourceLabel}
+                  onChange={(e) => setSourceLabel(e.target.value)}
+                  className={input}
+                >
+                  {SOURCE_LABELS.map((s) => (
+                    <option key={s.value} value={s.value}>{s.label}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-400 mt-1">
+                  Helps the AI understand context and generate a better quiz structure.
+                </p>
+              </div>
+            )}
 
             {/* Paste textarea */}
             {inputMode === 'paste' && (
@@ -414,6 +496,26 @@ export default function ImportToolPage() {
                 </p>
               </div>
             )}
+
+            {/* Raw JSON config paste */}
+            {inputMode === 'json' && (
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  Paste a complete quiz config JSON *
+                </label>
+                <textarea
+                  rows={14}
+                  value={jsonText}
+                  onChange={(e) => { setJsonText(e.target.value); setError(''); }}
+                  className={`${input} resize-y font-mono text-xs leading-relaxed`}
+                  placeholder={'{\n  "title": "Menopause Type Quiz",\n  "slug": "menopause-type-quiz",\n  "result_strategy": "hybrid_ai_with_outcome",\n  "scoring_config": {},\n  "result_config": {},\n  "questions": []\n}'}
+                  spellCheck={false}
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  Use this if you already have a finished config — from a previous export, another tool, or hand-written. No AI call is made; it goes straight to the review step below.
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Error display */}
@@ -432,10 +534,10 @@ export default function ImportToolPage() {
             </div>
           )}
 
-          {/* Generate button */}
+          {/* Generate / Load button */}
           <button
             type="button"
-            onClick={generateDraft}
+            onClick={inputMode === 'json' ? loadJsonDraft : generateDraft}
             disabled={step === 'generating'}
             className="w-full bg-indigo-600 text-white py-3.5 rounded-xl font-semibold hover:bg-indigo-700 disabled:opacity-60 transition-colors flex items-center justify-center gap-2"
           >
@@ -443,6 +545,11 @@ export default function ImportToolPage() {
               <>
                 <Loader2 size={17} className="animate-spin" />
                 Analyzing content with AI…
+              </>
+            ) : inputMode === 'json' ? (
+              <>
+                <Braces size={17} />
+                Load JSON Draft
               </>
             ) : (
               <>
@@ -511,6 +618,36 @@ export default function ImportToolPage() {
             </div>
           </div>
 
+          {/* Live validation */}
+          {draftValidation.parseError && (
+            <div className="bg-red-50 border border-red-100 rounded-xl px-4 py-3 flex items-start gap-2.5">
+              <AlertCircle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
+              <p className="text-sm text-red-700">{draftValidation.parseError}</p>
+            </div>
+          )}
+          {!draftValidation.parseError && draftValidation.errors.length > 0 && (
+            <div className="bg-red-50 border border-red-100 rounded-xl px-4 py-3 flex items-start gap-2.5">
+              <AlertCircle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-red-700 mb-1">Fix before saving:</p>
+                <ul className="text-xs text-red-600 list-disc list-inside space-y-0.5">
+                  {draftValidation.errors.map((e, i) => <li key={i}>{e}</li>)}
+                </ul>
+              </div>
+            </div>
+          )}
+          {!draftValidation.parseError && draftValidation.warnings.length > 0 && (
+            <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-3 flex items-start gap-2.5">
+              <AlertTriangle size={16} className="text-amber-500 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-amber-700 mb-1">Worth a look (won&apos;t block saving):</p>
+                <ul className="text-xs text-amber-600 list-disc list-inside space-y-0.5">
+                  {draftValidation.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                </ul>
+              </div>
+            </div>
+          )}
+
           {/* Error */}
           {error && (
             <div className="bg-red-50 border border-red-100 rounded-xl px-4 py-3 flex items-start gap-2.5">
@@ -519,12 +656,12 @@ export default function ImportToolPage() {
             </div>
           )}
 
-          {/* Create button */}
+          {/* Create button — only enabled once the draft JSON is valid */}
           <button
             type="button"
             onClick={createTool}
-            disabled={step === 'saving'}
-            className="w-full bg-indigo-600 text-white py-3.5 rounded-xl font-semibold hover:bg-indigo-700 disabled:opacity-60 transition-colors flex items-center justify-center gap-2"
+            disabled={step === 'saving' || !!draftValidation.parseError || draftValidation.errors.length > 0}
+            className="w-full bg-indigo-600 text-white py-3.5 rounded-xl font-semibold hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
           >
             {step === 'saving' ? (
               <>
