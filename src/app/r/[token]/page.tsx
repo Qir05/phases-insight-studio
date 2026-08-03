@@ -139,7 +139,7 @@ export default async function PublicResultPage({ params }: PageProps) {
         {/* ── Missing result configuration fallback ── */}
         {!(hasOutcome && outcome) && !(isAiOnly && aiResult) && (
           <div className="bg-amber-50 border border-amber-200 rounded-2xl px-5 py-4 text-sm text-amber-800">
-            This tool is missing result configuration. Please configure result strategy, scoring config, and result config.
+            This tool is missing result configuration. Please contact the administrator.
           </div>
         )}
 

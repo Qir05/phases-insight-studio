@@ -166,15 +166,17 @@ export async function POST(req: NextRequest) {
     const resultConfig  = tool.result_config  as ResultConfig  | null;
 
     if (!scoringConfig || !resultConfig) {
+      console.error(`[generate] Tool "${tool.slug}" (${tool.id}) is missing scoring_config/result_config for structured_outcome mode.`);
       return NextResponse.json(
-        { error: 'Tool is missing scoring_config or result_config for structured_outcome mode' },
+        { error: 'This tool is missing result configuration. Please contact the administrator.' },
         { status: 400 }
       );
     }
 
     const outcome = calculateOutcome(answers as AnswerMap, questions, scoringConfig, resultConfig);
     if (!outcome) {
-      return NextResponse.json({ error: 'Could not determine an outcome from the provided answers' }, { status: 400 });
+      console.error(`[generate] Tool "${tool.slug}" (${tool.id}) — could not match an outcome from the submitted answers. Check that option "category" values match result_config outcome ids.`);
+      return NextResponse.json({ error: 'This tool is missing result configuration. Please contact the administrator.' }, { status: 400 });
     }
 
     const resultToken = randomBytes(24).toString('hex');
@@ -225,15 +227,17 @@ export async function POST(req: NextRequest) {
     const resultConfig  = tool.result_config  as ResultConfig  | null;
 
     if (!scoringConfig || !resultConfig) {
+      console.error(`[generate] Tool "${tool.slug}" (${tool.id}) is missing scoring_config/result_config for hybrid_ai_with_outcome mode.`);
       return NextResponse.json(
-        { error: 'Tool is missing scoring_config or result_config for hybrid mode' },
+        { error: 'This tool is missing result configuration. Please contact the administrator.' },
         { status: 400 }
       );
     }
 
     const outcome = calculateOutcome(answers as AnswerMap, questions, scoringConfig, resultConfig);
     if (!outcome) {
-      return NextResponse.json({ error: 'Could not determine an outcome from the provided answers' }, { status: 400 });
+      console.error(`[generate] Tool "${tool.slug}" (${tool.id}) — could not match an outcome from the submitted answers. Check that option "category" values match result_config outcome ids.`);
+      return NextResponse.json({ error: 'This tool is missing result configuration. Please contact the administrator.' }, { status: 400 });
     }
 
     const hybridPrompt = buildHybridPrompt(
@@ -299,8 +303,9 @@ export async function POST(req: NextRequest) {
   const hasSystemPrompt   = typeof tool.system_prompt   === 'string' && tool.system_prompt.trim().length   > 0;
   const hasResultTemplate = typeof tool.result_template === 'string' && tool.result_template.trim().length > 0;
   if (!hasSystemPrompt && !hasResultTemplate) {
+    console.error(`[generate] Tool "${tool.slug}" (${tool.id}) is missing system_prompt/result_template for ai_generated mode.`);
     return NextResponse.json(
-      { error: 'This tool is missing result configuration. Please configure result strategy, scoring config, and result config.' },
+      { error: 'This tool is missing result configuration. Please contact the administrator.' },
       { status: 400 }
     );
   }

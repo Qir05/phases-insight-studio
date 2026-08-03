@@ -137,7 +137,7 @@ export default function SessionResultPage() {
         {/* ── Missing result configuration fallback ── */}
         {!((isStructured || isHybrid) && outcome) && !(isAiOnly && result.aiResult) && (
           <div className="bg-amber-50 border border-amber-200 rounded-2xl px-5 py-4 text-sm text-amber-800">
-            This tool is missing result configuration. Please configure result strategy, scoring config, and result config.
+            This tool is missing result configuration. Please contact the administrator.
           </div>
         )}
 
