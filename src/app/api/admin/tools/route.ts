@@ -4,6 +4,7 @@ import { getServiceClient } from '@/lib/supabase';
 import type { ResultStrategy } from '@/lib/supabase';
 import { slugify } from '@/lib/utils';
 import { validateResultConfig } from '@/lib/resultConfigValidation';
+import { insertToolRow } from '@/lib/toolAccess';
 
 const VALID_STRATEGIES: ResultStrategy[] = [
   'ai_generated',
@@ -31,7 +32,10 @@ export async function GET() {
   }
 
   const { data, error } = await query;
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    console.error('[tools GET]', error);
+    return NextResponse.json({ error: 'Failed to load tools' }, { status: 500 });
+  }
   return NextResponse.json({ tools: data });
 }
 
@@ -39,7 +43,13 @@ export async function POST(req: NextRequest) {
   const auth = await requireAuth();
   if (auth instanceof NextResponse) return auth;
 
-  const body = await req.json();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let body: Record<string, any>;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
   const {
     title, slug: requestedSlug, description, system_prompt,
     email_capture_enabled, phone_capture_enabled,
@@ -95,9 +105,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Slug "${slug}" is already in use by another tool` }, { status: 409 });
   }
 
-  const { data, error } = await db
-    .from('tools')
-    .insert({
+  const { data, error, draftSupported } = await insertToolRow({
       title,
       slug,
       description:             description          ?? null,
@@ -120,10 +128,11 @@ export async function POST(req: NextRequest) {
       result_config:           result_config         ?? null,
       result_template:         result_template       ?? null,
       admin_notes:             admin_notes           ?? null,
-    })
-    .select()
-    .single();
+  });
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ tool: data }, { status: 201 });
+  if (error || !data) {
+    console.error('[tools POST]', error);
+    return NextResponse.json({ error: 'Failed to create tool' }, { status: 500 });
+  }
+  return NextResponse.json({ tool: data, draft_supported: draftSupported }, { status: 201 });
 }

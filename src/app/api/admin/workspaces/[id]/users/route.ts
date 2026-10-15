@@ -27,10 +27,13 @@ export async function PATCH(
   const auth = await requireSuperAdmin();
   if (auth instanceof NextResponse) return auth;
 
-  const { user_id, is_active } = await req.json() as {
-    user_id?: string;
-    is_active?: boolean;
-  };
+  let body: { user_id?: string; is_active?: boolean };
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+  const { user_id, is_active } = body;
 
   if (!user_id || typeof is_active !== 'boolean') {
     return NextResponse.json(
@@ -39,7 +42,16 @@ export async function PATCH(
     );
   }
 
+  if (user_id === auth.user.id) {
+    return NextResponse.json({ error: 'You cannot change your own account here.' }, { status: 400 });
+  }
+
   const db = getServiceClient();
+
+  const { data: target } = await db.from('profiles').select('role').eq('user_id', user_id).maybeSingle();
+  if (target?.role === 'super_admin') {
+    return NextResponse.json({ error: 'Manage super admins from the Users page.' }, { status: 400 });
+  }
   const { data, error } = await db
     .from('profiles')
     .update({ is_active })

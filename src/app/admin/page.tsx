@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Tool } from '@/lib/supabase';
-import { PlusCircle, ExternalLink, List, Users, Trash2, BarChart3, Layers, Settings } from 'lucide-react';
+import { PlusCircle, ExternalLink, List, Users, Trash2, BarChart3, Layers, Settings, Wand2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { computeConfigStatus, type ConfigStatus } from '@/lib/resultConfigValidation';
 
@@ -36,8 +36,17 @@ function ToolBadges({ tool }: { tool: ToolWithCounts }) {
   const status = computeConfigStatus(tool);
   const { label: statusLabel, className: statusClass } = CONFIG_STATUS_STYLE[status];
 
+  const isDraft = tool.status === 'draft';
+
   return (
     <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
+      <span
+        className={`text-[11px] px-2 py-0.5 rounded-full font-semibold ${
+          isDraft ? 'bg-amber-100 text-amber-800' : 'bg-green-100 text-green-800'
+        }`}
+      >
+        {isDraft ? 'Draft — not public' : 'Live'}
+      </span>
       <span className="text-[11px] px-2 py-0.5 rounded-full font-medium bg-indigo-50 text-indigo-600">
         {TOOL_MODE_LABEL[tool.tool_mode] ?? tool.tool_mode}
       </span>
@@ -78,17 +87,25 @@ export default function AdminDashboard() {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-8">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
           <p className="text-sm text-gray-500 mt-1">Manage your AI assessment tools</p>
         </div>
-        <Link
-          href="/admin/tools/new"
-          className="inline-flex items-center gap-2 bg-indigo-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors"
-        >
-          <PlusCircle size={16} /> New Tool
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/admin/tools/import"
+            className="inline-flex items-center gap-2 border border-indigo-200 text-indigo-700 px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-indigo-50 transition-colors"
+          >
+            <Wand2 size={16} /> Import Quiz
+          </Link>
+          <Link
+            href="/admin/tools/new"
+            className="inline-flex items-center gap-2 bg-indigo-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors"
+          >
+            <PlusCircle size={16} /> New Tool
+          </Link>
+        </div>
       </div>
 
       {/* Stats row */}
@@ -143,7 +160,7 @@ export default function AdminDashboard() {
               key={tool.id}
               className="bg-white rounded-2xl border border-gray-100 p-5 hover:border-gray-200 transition-colors"
             >
-              <div className="flex items-start justify-between gap-4">
+              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4">
                 {/* Info */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
@@ -175,9 +192,9 @@ export default function AdminDashboard() {
                 </div>
 
                 {/* Actions */}
-                <div className="flex items-center gap-1.5 flex-shrink-0 flex-wrap justify-end">
+                <div className="flex items-center gap-1.5 flex-shrink-0 flex-wrap sm:justify-end">
                   <Link
-                    href={`/t/${tool.slug}`}
+                    href={`/t/${tool.slug}${tool.status === 'draft' ? '?preview=1' : ''}`}
                     target="_blank"
                     className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-indigo-600 border border-gray-200 rounded-lg px-2.5 py-1.5 transition-colors"
                   >

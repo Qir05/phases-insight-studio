@@ -9,6 +9,7 @@ import { toast } from 'sonner';
 import type { StructuredResult } from '@/lib/groq';
 import type { Outcome } from '@/lib/supabase';
 import Link from 'next/link';
+import { isSafeUrl } from '@/lib/resultConfigValidation';
 
 interface StoredResult {
   mode:               'ai_result' | 'structured_outcome' | 'hybrid_ai_with_outcome';
@@ -19,6 +20,7 @@ interface StoredResult {
   resultToken:        string;
   toolTitle:          string;
   providerName?:      string | null;
+  preview?:           boolean;
 }
 
 export default function SessionResultPage() {
@@ -59,6 +61,12 @@ export default function SessionResultPage() {
       </header>
 
       <main className="max-w-xl mx-auto px-4 sm:px-6 py-8 space-y-5">
+        {result.preview && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl px-5 py-3 text-xs text-amber-800">
+            <strong>Admin preview result.</strong> This is exactly what a respondent would see, but it was not saved and has no permanent link.
+          </div>
+        )}
+
         {/* Success banner */}
         <div className="bg-green-50 border border-green-100 rounded-2xl px-5 py-4 flex items-center gap-3">
           <CheckCircle size={18} className="text-green-500 flex-shrink-0" />
@@ -106,7 +114,7 @@ export default function SessionResultPage() {
             )}
 
             {/* CTA */}
-            {outcome.cta_text && outcome.cta_url && (
+            {outcome.cta_text && isSafeUrl(outcome.cta_url) && (
               <div className="border-t border-gray-100 pt-5">
                 <a
                   href={outcome.cta_url}
@@ -145,6 +153,7 @@ export default function SessionResultPage() {
 
         {/* Share row */}
         <div className="flex items-center gap-3 flex-wrap">
+          {!result.preview && (<>
           <button
             onClick={copyLink}
             className="inline-flex items-center gap-2 text-sm border border-gray-200 rounded-lg px-4 py-2 text-gray-600 hover:border-indigo-300 hover:text-indigo-600 transition-colors"
@@ -159,8 +168,9 @@ export default function SessionResultPage() {
           >
             <ExternalLink size={14} /> Open permanent link
           </a>
+          </>)}
           <Link
-            href={`/t/${slug}`}
+            href={`/t/${slug}${result.preview ? '?preview=1' : ''}`}
             className="inline-flex items-center gap-2 text-sm text-gray-400 hover:text-indigo-600 transition-colors ml-auto"
           >
             <RefreshCw size={14} /> Retake quiz

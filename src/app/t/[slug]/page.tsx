@@ -23,9 +23,11 @@ export default function PublicQuizPage() {
   const [contact, setContact]       = useState({ firstName: '', lastName: '', email: '', phone: '' });
   const [submitting, setSubmitting] = useState(false);
   const submittingRef               = useRef(false);
+  const [preview, setPreview]       = useState(false);
 
   useEffect(() => {
-    fetch(`/api/tools/${slug}`)
+    const wantsPreview = new URLSearchParams(window.location.search).get('preview') === '1';
+    fetch(`/api/tools/${slug}${wantsPreview ? '?preview=1' : ''}`)
       .then((r) => {
         if (!r.ok) { setNotFound(true); setLoading(false); return null; }
         return r.json();
@@ -34,8 +36,10 @@ export default function PublicQuizPage() {
         if (!json) return;
         setTool(json.tool);
         setQuestions(json.questions);
+        setPreview(!!json.preview);
         setLoading(false);
-      });
+      })
+      .catch(() => { setNotFound(true); setLoading(false); });
   }, [slug]);
 
   // ── Stable callbacks ──────────────────────────────────────────────────────
@@ -88,7 +92,7 @@ export default function PublicQuizPage() {
   const progress      = Math.round((step / totalSteps) * 100);
 
   function canAdvance(): boolean {
-    if (isContactStep) return !!contact.email.trim();
+    if (isContactStep) return preview || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact.email.trim());
     const q = questions[step];
     if (!q.required) return true;
     const val = answers[q.label];
@@ -103,6 +107,38 @@ export default function PublicQuizPage() {
     setSubmitting(true);
 
     try {
+      // Draft preview: run the real scoring/AI pipeline through the admin
+      // preview endpoint — nothing is saved and no webhooks fire.
+      if (preview && tool) {
+        const res = await fetch(`/api/admin/tools/${tool.id}/preview`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ answers }),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          toast.error(json.internal_error ?? json.error ?? 'Preview failed.');
+          return;
+        }
+        if (json.mode === 'smartform_redirect') {
+          toast.success('Preview: answers are valid. Live respondents would now be redirected.');
+          return;
+        }
+        sessionStorage.setItem(`result_${slug}`, JSON.stringify({
+          mode:              json.mode,
+          outcome:           json.outcome ?? undefined,
+          aiResult:          json.ai_result ?? undefined,
+          aiPersonalization: json.ai_result ?? undefined,
+          resultJson:        json.result_json ?? null,
+          resultToken:       '',
+          toolTitle:         tool.title,
+          providerName:      tool.provider_name ?? null,
+          preview:           true,
+        }));
+        router.push(`/t/${slug}/result`);
+        return;
+      }
+
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -116,11 +152,10 @@ export default function PublicQuizPage() {
         }),
       });
 
-      const json = await res.json();
+      const json = await res.json().catch(() => ({}));
 
       if (!res.ok) {
-        const msg = json.detail ?? json.error ?? 'Something went wrong. Please try again.';
-        toast.error(msg);
+        toast.error(json.error ?? 'Something went wrong. Please try again.');
         return;
       }
 
@@ -189,6 +224,14 @@ export default function PublicQuizPage() {
           <span className="text-xs text-gray-400 hidden sm:block">{tool.title}</span>
         </div>
       </header>
+
+      {preview && (
+        <div className="bg-amber-50 border-b border-amber-200">
+          <p className="max-w-2xl mx-auto px-4 sm:px-6 py-2 text-xs text-amber-800">
+            <strong>Admin preview.</strong> This tool may be a draft. Submitting runs the real scoring and AI, but nothing is saved and no webhooks fire.
+          </p>
+        </div>
+      )}
 
       {/* Progress bar */}
       <div className="bg-gray-200 h-0.5 w-full">

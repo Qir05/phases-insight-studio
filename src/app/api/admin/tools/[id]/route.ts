@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth';
 import { getServiceClient } from '@/lib/supabase';
-import type { ResultStrategy, ScoringConfig, ResultConfig } from '@/lib/supabase';
+import type { ResultStrategy, ScoringConfig, ResultConfig, Question } from '@/lib/supabase';
 import { slugify } from '@/lib/utils';
 import { validateResultConfig } from '@/lib/resultConfigValidation';
+import { canAccessTool, toolStatus } from '@/lib/toolAccess';
 
 const VALID_STRATEGIES: ResultStrategy[] = [
   'ai_generated',
@@ -19,16 +20,6 @@ async function resolveTool(toolId: string) {
     .eq('id', toolId)
     .single();
   return { tool: data, error };
-}
-
-function canAccessTool(
-  role: string,
-  workspaceId: string | null,
-  toolWorkspaceId: string | null
-): boolean {
-  if (role === 'super_admin') return true;
-  // provider_admin must share a workspace_id
-  return !!workspaceId && workspaceId === toolWorkspaceId;
 }
 
 export async function GET(
@@ -62,17 +53,39 @@ export async function PATCH(
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  const body = await req.json();
-  const db   = getServiceClient();
+  let body: Record<string, unknown>;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
 
+  // Whitelist of simple fields a partial update may touch. id, slug, workspace_id,
+  // status, scoring/result config etc. go through PUT / publish so they are validated.
+  const PATCHABLE = [
+    'title', 'description', 'email_capture_enabled', 'phone_capture_enabled',
+    'provider_name', 'provider_logo_url', 'primary_color', 'admin_notes',
+  ];
+  const patch: Record<string, unknown> = {};
+  for (const key of PATCHABLE) {
+    if (body[key] !== undefined) patch[key] = body[key];
+  }
+  if (Object.keys(patch).length === 0) {
+    return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
+  }
+
+  const db = getServiceClient();
   const { data, error } = await db
     .from('tools')
-    .update({ ...body, updated_at: new Date().toISOString() })
+    .update({ ...patch, updated_at: new Date().toISOString() })
     .eq('id', params.id)
     .select()
     .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    console.error('[tool PATCH]', error);
+    return NextResponse.json({ error: 'Failed to update tool' }, { status: 500 });
+  }
   return NextResponse.json({ tool: data });
 }
 
@@ -178,6 +191,24 @@ export async function PUT(
 
   const db = getServiceClient();
 
+  // Question-aware checks (unmapped categories, unreachable outcomes, score gaps…).
+  // They block saving only when the tool is live, so drafts can be saved mid-edit.
+  if (resolvedMode !== 'smartform_redirect' && resolvedStrategy !== 'ai_generated') {
+    const { data: qs } = await db.from('questions').select('label, variable_name, field_type, options, category').eq('tool_id', params.id);
+    const full = validateResultConfig(resolvedMode, resolvedStrategy, scoring_config ?? null, result_config ?? null, (qs ?? []) as Question[]);
+    const questionErrors = full.errors.filter((e) => !warnings.includes(e));
+    if (questionErrors.length > 0 && toolStatus(tool) === 'published') {
+      return NextResponse.json(
+        {
+          error: `This tool is live, so this change was not saved: ${questionErrors[0]} Fix it, or unpublish the tool first.`,
+          errors: questionErrors,
+        },
+        { status: 400 }
+      );
+    }
+    warnings = Array.from(new Set([...warnings, ...full.warnings, ...questionErrors]));
+  }
+
   const finalSlug = slugify((requestedSlug && requestedSlug.trim()) || title);
   if (!finalSlug) {
     return NextResponse.json({ error: 'Slug must contain at least one letter or number' }, { status: 400 });
@@ -224,7 +255,10 @@ export async function PUT(
     .select()
     .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    console.error('[tool PUT]', error);
+    return NextResponse.json({ error: 'Failed to save settings' }, { status: 500 });
+  }
   return NextResponse.json({ tool: data, warnings });
 }
 
@@ -244,6 +278,9 @@ export async function DELETE(
 
   const db = getServiceClient();
   const { error } = await db.from('tools').delete().eq('id', params.id);
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    console.error('[tool DELETE]', error);
+    return NextResponse.json({ error: 'Failed to delete tool' }, { status: 500 });
+  }
   return NextResponse.json({ success: true });
 }

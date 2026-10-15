@@ -55,10 +55,8 @@ export function compilePrompt(
 
   const qaBlock = questions.length > 0
     ? questions
-        .map((q) => {
-          const varTag = q.variable_name ? ` [variable: ${q.variable_name}]` : '';
-          return `Q: ${q.label}${varTag}\nA: ${formatAnswerValue(answers[q.label])}`;
-        })
+        // Variable names are deliberately left out: the model tends to echo them back to respondents.
+        .map((q) => `Q: ${q.label}\nA: ${formatAnswerValue(answers[q.label])}`)
         .join('\n\n')
     : Object.entries(answers)
         .map(([label, value]) => `Q: ${label}\nA: ${formatAnswerValue(value)}`)
@@ -91,6 +89,7 @@ export function compilePrompt(
     'Instructions:',
     '- Base your response specifically on the answers above. Reference at least 2 to 4 specific answers by question label in your explanation.',
     '- Do not invent facts that are not supported by the answers.',
+    '- Never output internal identifiers, variable names, snake_case keys or {{placeholders}} — refer to questions by their wording.',
     '- This result is educational only. It is not a medical diagnosis, treatment plan, or clinical advice. Recommend the user consult a qualified professional for personalized care.',
     '- Respond ONLY with a single valid JSON object matching this exact schema — no markdown formatting, no code fences, no extra commentary outside the JSON:',
     jsonSchema,

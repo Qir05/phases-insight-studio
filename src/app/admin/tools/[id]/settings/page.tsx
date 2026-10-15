@@ -4,11 +4,28 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { toast } from 'sonner';
 import { slugify } from '@/lib/utils';
-import { ArrowLeft, ExternalLink, List, Users, AlertTriangle, Sparkles, Loader2 } from 'lucide-react';
-import type { ResultStrategy, ScoringConfig, ResultConfig, Tool, Question } from '@/lib/supabase';
+import { ArrowLeft, ExternalLink, List, Users, AlertTriangle, Sparkles, Loader2, Wrench } from 'lucide-react';
+import type { ResultStrategy, ScoringConfig, ResultConfig, Tool, Question, QuestionOption } from '@/lib/supabase';
 import { validateResultConfig } from '@/lib/resultConfigValidation';
+import { getOptionCategory, getOptionLabel, getOptionValue } from '@/lib/scoring';
+import PublishControls from '@/components/PublishControls';
+import TestOutcomeMapping from '@/components/TestOutcomeMapping';
 
 type ToolMode = 'ai_result' | 'smartform_redirect';
+
+interface OptionMapping {
+  question_id:    string;
+  question_label: string;
+  options:        { label: string; value: string; category: string | null }[];
+}
+
+interface MigrationDraft {
+  result_strategy: ResultStrategy;
+  scoring_config:  string;
+  result_config:   string;
+  result_template: string;
+  option_mappings: OptionMapping[];
+}
 
 const RESULT_STRATEGY_OPTIONS: { value: ResultStrategy; label: string; description: string }[] = [
   {
@@ -105,10 +122,16 @@ export default function ToolSettingsPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [form, setForm]         = useState<FormState>(EMPTY_FORM);
 
+  const [saveErrors, setSaveErrors] = useState<string[]>([]);
+  const [refreshKey, setRefreshKey] = useState(0);
+
   // ── Migration Assistant (draft result config inferred from existing questions) ──
-  const [inferring,    setInferring]    = useState(false);
-  const [draftPreview, setDraftPreview] = useState<string | null>(null);
-  const [draftError,   setDraftError]   = useState<string | null>(null);
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [inferring,     setInferring]     = useState(false);
+  const [draft,         setDraft]         = useState<MigrationDraft | null>(null);
+  const [draftError,    setDraftError]    = useState<string | null>(null);
+  const [draftReviewed, setDraftReviewed] = useState(false);
+  const [applying,      setApplying]      = useState(false);
 
   const update = useCallback((key: keyof FormState, value: string | boolean) => {
     setForm((f) => ({ ...f, [key]: value }));
@@ -192,46 +215,138 @@ export default function ToolSettingsPage() {
     );
   }, [isSmartForm, needsScoring, form.tool_mode, strategy, form.scoring_config, form.result_config, questions]);
 
+  // Parsed (unsaved) form configs for the test harness — null while the JSON is invalid.
+  const liveConfigs = useMemo(() => {
+    try {
+      const scoring = form.scoring_config.trim() ? JSON.parse(form.scoring_config) as ScoringConfig : null;
+      const result  = form.result_config.trim()  ? JSON.parse(form.result_config)  as ResultConfig  : null;
+      return scoring && result ? { scoring, result } : null;
+    } catch {
+      return null;
+    }
+  }, [form.scoring_config, form.result_config]);
+
   async function generateDraftResultConfig() {
     setInferring(true);
     setDraftError(null);
+    setDraftReviewed(false);
     const res  = await fetch(`/api/admin/tools/${id}/infer-result-config`, { method: 'POST' });
-    const json = await res.json().catch(() => ({})) as { draft?: unknown; error?: string };
+    const json = await res.json().catch(() => ({})) as {
+      draft?: {
+        result_strategy: ResultStrategy;
+        scoring_config: unknown;
+        result_config: unknown;
+        result_template: string | null;
+        option_mappings: OptionMapping[];
+      };
+      error?: string;
+    };
     setInferring(false);
 
     if (!res.ok || !json.draft) {
       setDraftError(json.error ?? 'Failed to generate a draft. Please try again.');
       return;
     }
-    setDraftPreview(JSON.stringify(json.draft, null, 2));
+    setDraft({
+      result_strategy: json.draft.result_strategy,
+      scoring_config:  JSON.stringify(json.draft.scoring_config ?? { type: 'category', categories: [] }, null, 2),
+      result_config:   JSON.stringify(json.draft.result_config ?? { outcomes: [] }, null, 2),
+      result_template: json.draft.result_template ?? '',
+      option_mappings: json.draft.option_mappings ?? [],
+    });
   }
 
-  function applyDraftToForm() {
-    if (!draftPreview) return;
-    let draft: { scoring_config?: unknown; result_config?: unknown; result_template?: string };
-    try {
-      draft = JSON.parse(draftPreview);
-    } catch {
-      setDraftError('The draft JSON is not valid — fix any syntax errors before applying.');
+  /** Starts a migration draft from the tool's current config (no AI) so mappings can be corrected by hand. */
+  function startManualDraft() {
+    setDraftError(null);
+    setDraftReviewed(false);
+    setDraft({
+      result_strategy: needsScoring ? strategy : 'hybrid_ai_with_outcome',
+      scoring_config:  form.scoring_config || JSON.stringify({ type: 'category', categories: [] }, null, 2),
+      result_config:   form.result_config  || JSON.stringify({ outcomes: [] }, null, 2),
+      result_template: form.result_template,
+      option_mappings: questions
+        .filter((q) => Array.isArray(q.options) && q.options.length > 0)
+        .map((q) => ({
+          question_id:    q.id,
+          question_label: q.label,
+          options: (q.options as QuestionOption[]).map((o) => ({
+            label:    getOptionLabel(o),
+            value:    getOptionValue(o),
+            category: getOptionCategory(o) ?? null,
+          })),
+        })),
+    });
+  }
+
+  function setMapping(questionId: string, optionIndex: number, category: string | null) {
+    setDraftReviewed(false);
+    setDraft((d) => d && ({
+      ...d,
+      option_mappings: d.option_mappings.map((m) =>
+        m.question_id !== questionId ? m : {
+          ...m,
+          options: m.options.map((o, i) => (i === optionIndex ? { ...o, category } : o)),
+        }
+      ),
+    }));
+  }
+
+  const draftParsed = useMemo(() => {
+    if (!draft) return null;
+    let scoring: ScoringConfig | null = null;
+    let result: ResultConfig | null = null;
+    let parseError: string | null = null;
+    try { scoring = JSON.parse(draft.scoring_config); } catch { parseError = 'Scoring config JSON is not valid.'; }
+    try { result = JSON.parse(draft.result_config); } catch { parseError = 'Result config JSON is not valid.'; }
+    const mergedQuestions = questions.map((q) => {
+      const m = draft.option_mappings.find((x) => x.question_id === q.id);
+      return m
+        ? { ...q, options: m.options.map((o) => ({ label: o.label, value: o.value, score: 1, ...(o.category ? { category: o.category } : {}) })) }
+        : q;
+    });
+    const validation = parseError
+      ? { errors: [parseError], warnings: [] as string[] }
+      : validateResultConfig('ai_result', draft.result_strategy, scoring, result, mergedQuestions);
+    const categoryChoices = Array.from(new Set([
+      ...(Array.isArray(scoring?.categories) ? scoring!.categories : []),
+      ...((result?.outcomes ?? []).map((o) => o?.match?.top_category).filter(Boolean) as string[]),
+    ]));
+    return { scoring, result, mergedQuestions, validation, categoryChoices };
+  }, [draft, questions]);
+
+  async function saveMigration() {
+    if (!draft || !draftParsed?.scoring || !draftParsed.result) return;
+    setApplying(true);
+    const res = await fetch(`/api/admin/tools/${id}/apply-result-config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        result_strategy: draft.result_strategy,
+        scoring_config:  draftParsed.scoring,
+        result_config:   draftParsed.result,
+        result_template: draft.result_template,
+        option_mappings: draft.option_mappings,
+      }),
+    });
+    const json = await res.json().catch(() => ({})) as { error?: string; errors?: string[]; questions_updated?: number };
+    setApplying(false);
+    if (!res.ok) {
+      setDraftError(json.error ?? 'Failed to save the migration.');
       return;
     }
-
-    setForm((f) => ({
-      ...f,
-      result_strategy: 'hybrid_ai_with_outcome',
-      scoring_config:  draft.scoring_config  ? JSON.stringify(draft.scoring_config, null, 2) : f.scoring_config,
-      result_config:   draft.result_config   ? JSON.stringify(draft.result_config,  null, 2) : f.result_config,
-      result_template: draft.result_template ?? f.result_template,
-    }));
-    setDraftPreview(null);
-    setDraftError(null);
-    toast.success('Draft applied below — review it, then click Save Changes to publish.');
+    toast.success(`Result configuration saved — ${json.questions_updated ?? 0} question(s) mapped. Tool ID and submissions unchanged.`);
+    setDraft(null);
+    setAssistantOpen(false);
+    setRefreshKey((k) => k + 1);
+    load();
   }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
     setSaveError(null);
+    setSaveErrors([]);
 
     let parsedScoringConfig: unknown = null;
     let parsedResultConfig:  unknown = null;
@@ -262,16 +377,18 @@ export default function ToolSettingsPage() {
         result_config:      parsedResultConfig,
       }),
     });
-    const json = await res.json().catch(() => ({})) as { tool?: Tool; error?: string };
+    const json = await res.json().catch(() => ({})) as { tool?: Tool; error?: string; errors?: string[] };
     setSaving(false);
 
     if (!res.ok) {
       setSaveError(json.error ?? 'Failed to save settings');
+      setSaveErrors(json.errors && json.errors.length > 1 ? json.errors : []);
       toast.error(json.error ?? 'Failed to save settings');
       return;
     }
 
     toast.success('Settings saved');
+    setRefreshKey((k) => k + 1);
     load();
   }
 
@@ -294,13 +411,13 @@ export default function ToolSettingsPage() {
         <ArrowLeft size={15} /> Back to Dashboard
       </Link>
 
-      <div className="flex items-start justify-between mb-6 gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between mb-6 gap-3 sm:gap-4">
         <div className="min-w-0">
           <h1 className="text-2xl font-bold text-gray-900 truncate">{tool?.title}</h1>
           <p className="text-sm text-gray-500 mt-0.5">Tool Settings</p>
         </div>
         {tool && (
-          <div className="flex items-center gap-2 flex-shrink-0">
+          <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
             <Link
               href={`/admin/tools/${id}/questions`}
               className="inline-flex items-center gap-1 text-xs border border-gray-200 rounded-lg px-3 py-1.5 text-gray-500 hover:text-indigo-600 transition-colors"
@@ -314,7 +431,7 @@ export default function ToolSettingsPage() {
               <Users size={13} /> Submissions
             </Link>
             <Link
-              href={`/t/${tool.slug}`}
+              href={`/t/${tool.slug}?preview=1`}
               target="_blank"
               className="inline-flex items-center gap-1 text-xs border border-gray-200 rounded-lg px-3 py-1.5 text-gray-500 hover:text-indigo-600 transition-colors"
             >
@@ -324,9 +441,20 @@ export default function ToolSettingsPage() {
         )}
       </div>
 
+      {tool && (
+        <div className="mb-6">
+          <PublishControls toolId={tool.id} slug={tool.slug} refreshKey={refreshKey} />
+        </div>
+      )}
+
       {saveError && (
         <div className="bg-red-50 border border-red-100 rounded-2xl px-4 py-3 text-sm text-red-700 mb-6">
           {saveError}
+          {saveErrors.length > 0 && (
+            <ul className="list-disc list-inside text-xs mt-1.5 space-y-0.5">
+              {saveErrors.slice(1).map((e, i) => <li key={i}>{e}</li>)}
+            </ul>
+          )}
         </div>
       )}
 
@@ -437,69 +565,205 @@ export default function ToolSettingsPage() {
           )}
         </section>
 
-        {/* Migration Assistant — only for tools that have never been configured */}
-        {needsMigrationAssistant && (
-          <section className="bg-amber-50 border border-amber-200 rounded-2xl p-6 space-y-4">
+        {/* Migration Assistant — prominent for never-configured tools, on demand otherwise */}
+        {!isSmartForm && !needsMigrationAssistant && !assistantOpen && !draft && (
+          <button
+            type="button"
+            onClick={() => setAssistantOpen(true)}
+            className="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-indigo-600"
+          >
+            <Wrench size={13} /> Open Migration Assistant (review or rebuild answer → outcome mappings)
+          </button>
+        )}
+
+        {!isSmartForm && (needsMigrationAssistant || assistantOpen || draft) && (
+          <section className="bg-amber-50 border border-amber-200 rounded-2xl p-4 sm:p-6 space-y-4">
             <div className="flex items-start gap-2.5">
               <AlertTriangle size={16} className="text-amber-500 flex-shrink-0 mt-0.5" />
               <div>
-                <p className="text-sm font-semibold text-amber-800">This tool is missing result configuration.</p>
+                <p className="text-sm font-semibold text-amber-800">
+                  {needsMigrationAssistant ? 'This tool is missing result configuration.' : 'Migration Assistant'}
+                </p>
                 <p className="text-xs text-amber-700 mt-0.5">
-                  It will fall back to plain AI text (or a config error) until a result strategy is set up.
+                  Builds a scored result configuration from this tool&apos;s existing questions. The tool ID, question IDs, option wording and existing submissions are kept as they are.
                   {questions.length === 0 && ' Add questions to this tool first — the assistant reads your existing questions and options.'}
                 </p>
               </div>
             </div>
 
-            {!draftPreview && (
-              <button
-                type="button"
-                onClick={generateDraftResultConfig}
-                disabled={inferring || questions.length === 0}
-                className="inline-flex items-center gap-2 bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                {inferring ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
-                {inferring ? 'Analyzing existing questions…' : 'Generate Draft Result Config'}
-              </button>
+            {!draft && (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={generateDraftResultConfig}
+                  disabled={inferring || questions.length === 0}
+                  className="inline-flex items-center gap-2 bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {inferring ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
+                  {inferring ? 'Analyzing existing questions…' : 'Generate Draft Result Config'}
+                </button>
+                <button
+                  type="button"
+                  onClick={startManualDraft}
+                  disabled={questions.length === 0}
+                  className="px-4 py-2 text-sm text-amber-800 border border-amber-300 rounded-lg hover:bg-amber-100 disabled:opacity-50"
+                >
+                  Edit current mappings by hand
+                </button>
+                {assistantOpen && (
+                  <button type="button" onClick={() => setAssistantOpen(false)} className="px-3 py-2 text-sm text-amber-700">
+                    Close
+                  </button>
+                )}
+              </div>
             )}
 
             {draftError && (
               <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{draftError}</p>
             )}
 
-            {draftPreview && (
-              <div className="space-y-3">
+            {draft && draftParsed && (
+              <div className="space-y-4">
                 <div className="bg-amber-100 border border-amber-200 rounded-lg px-3 py-2">
-                  <p className="text-xs font-semibold text-amber-800">Draft — review before publishing.</p>
+                  <p className="text-xs font-semibold text-amber-800">Draft — review before saving.</p>
                   <p className="text-xs text-amber-700 mt-0.5">
-                    Inferred only from this tool&apos;s existing questions and options. This is <strong>not</strong> confirmed FormWise copy — read it carefully, edit anything wrong, and only then apply it below.
+                    Inferred only from this tool&apos;s existing questions and options. This is <strong>not</strong> confirmed FormWise copy or scoring — check every mapping and outcome below.
                   </p>
                 </div>
-                <textarea
-                  rows={16}
-                  value={draftPreview}
-                  onChange={(e) => setDraftPreview(e.target.value)}
-                  className="w-full border border-amber-200 rounded-xl px-4 py-3 text-xs font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-amber-500 resize-y bg-white"
-                  spellCheck={false}
-                />
-                <div className="flex gap-2">
+
+                {/* Option → category mapping review */}
+                <div className="bg-white border border-amber-100 rounded-xl p-4 space-y-4">
+                  <p className="text-sm font-semibold text-gray-800">1. Answer → outcome mapping</p>
+                  {draft.option_mappings.length === 0 && (
+                    <p className="text-xs text-gray-500">No multiple-choice questions to map.</p>
+                  )}
+                  {draft.option_mappings.map((m, qi) => (
+                    <div key={m.question_id} className="space-y-1.5">
+                      <p className="text-xs font-medium text-gray-700">Q{qi + 1}. {m.question_label}</p>
+                      {m.options.map((o, oi) => (
+                        <div key={oi} className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_200px] gap-1 sm:gap-2 sm:items-center">
+                          <span className="text-xs text-gray-600 min-w-0 break-words">{o.label}</span>
+                          <select
+                            aria-label={`Category for ${o.label}`}
+                            value={o.category ?? ''}
+                            onChange={(e) => setMapping(m.question_id, oi, e.target.value || null)}
+                            className={`border rounded-lg px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-amber-500 ${
+                              o.category ? 'border-gray-200' : 'border-red-200 bg-red-50'
+                            }`}
+                          >
+                            <option value="">— not scored —</option>
+                            {Array.from(new Set([...draftParsed.categoryChoices, ...(o.category ? [o.category] : [])])).map((c) => (
+                              <option key={c} value={c}>{c}</option>
+                            ))}
+                          </select>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+
+                {/* Outcomes + scoring JSON */}
+                <div className="bg-white border border-amber-100 rounded-xl p-4 space-y-3">
+                  <p className="text-sm font-semibold text-gray-800">2. Outcomes, scoring and AI instructions</p>
+                  <Field label="Result strategy">
+                    <select
+                      value={draft.result_strategy}
+                      onChange={(e) => setDraft((d) => d && ({ ...d, result_strategy: e.target.value as ResultStrategy }))}
+                      className={input}
+                    >
+                      <option value="hybrid_ai_with_outcome">Hybrid — Outcome + AI Personalisation</option>
+                      <option value="structured_outcome">Structured Outcome (no AI)</option>
+                    </select>
+                  </Field>
+                  <Field label="Scoring Config (JSON)" hint='Category order here decides ties (earlier wins), unless you add "tie_breaker": "tie_outcome" with a "tie_outcome_id".'>
+                    <textarea
+                      rows={5}
+                      value={draft.scoring_config}
+                      onChange={(e) => setDraft((d) => d && ({ ...d, scoring_config: e.target.value }))}
+                      className={`${input} resize-y font-mono text-xs`}
+                      spellCheck={false}
+                    />
+                  </Field>
+                  <Field label="Result Config (JSON)" hint="Outcome titles, descriptions, recommendations, CTA text and CTA URLs.">
+                    <textarea
+                      rows={14}
+                      value={draft.result_config}
+                      onChange={(e) => setDraft((d) => d && ({ ...d, result_config: e.target.value }))}
+                      className={`${input} resize-y font-mono text-xs`}
+                      spellCheck={false}
+                    />
+                  </Field>
+                  {draft.result_strategy === 'hybrid_ai_with_outcome' && (
+                    <Field label="Result Template (AI personalisation instructions)">
+                      <textarea
+                        rows={4}
+                        value={draft.result_template}
+                        onChange={(e) => setDraft((d) => d && ({ ...d, result_template: e.target.value }))}
+                        className={`${input} resize-y`}
+                      />
+                    </Field>
+                  )}
+                </div>
+
+                {/* Validation */}
+                {draftParsed.validation.errors.length > 0 && (
+                  <div className="bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">
+                    <p className="text-xs font-medium text-red-700 mb-1">Must fix before saving:</p>
+                    <ul className="text-xs text-red-600 list-disc list-inside space-y-0.5">
+                      {draftParsed.validation.errors.map((e, i) => <li key={i}>{e}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {draftParsed.validation.warnings.length > 0 && (
+                  <div className="bg-white border border-amber-100 rounded-lg px-3 py-2.5">
+                    <p className="text-xs font-medium text-amber-700 mb-1">Worth a look:</p>
+                    <ul className="text-xs text-amber-600 list-disc list-inside space-y-0.5">
+                      {draftParsed.validation.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                    </ul>
+                  </div>
+                )}
+
+                {/* 3. Test before saving */}
+                {draftParsed.scoring && draftParsed.result && (
+                  <TestOutcomeMapping
+                    questions={draftParsed.mergedQuestions}
+                    scoringConfig={draftParsed.scoring}
+                    resultConfig={draftParsed.result}
+                    resultStrategy={draft.result_strategy}
+                    defaultOpen
+                  />
+                )}
+
+                <label className="flex items-start gap-2 text-sm text-amber-900 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={draftReviewed}
+                    onChange={(e) => setDraftReviewed(e.target.checked)}
+                    className="accent-amber-600 mt-0.5"
+                  />
+                  I have reviewed every mapping and outcome above and tested sample answers.
+                </label>
+
+                <div className="flex flex-col sm:flex-row gap-2">
                   <button
                     type="button"
-                    onClick={applyDraftToForm}
-                    className="flex-1 bg-amber-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-amber-700 transition-colors"
+                    onClick={saveMigration}
+                    disabled={applying || !draftReviewed || draftParsed.validation.errors.length > 0}
+                    className="flex-1 bg-amber-600 text-white py-2.5 rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors inline-flex items-center justify-center gap-2"
                   >
-                    Apply to Form Below
+                    {applying && <Loader2 size={14} className="animate-spin" />}
+                    Save Result Configuration
                   </button>
                   <button
                     type="button"
-                    onClick={() => { setDraftPreview(null); setDraftError(null); }}
-                    className="px-4 py-2 text-sm text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 transition-colors"
+                    onClick={() => { setDraft(null); setDraftError(null); setAssistantOpen(false); }}
+                    className="px-4 py-2.5 text-sm text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 transition-colors"
                   >
                     Discard
                   </button>
                 </div>
                 <p className="text-xs text-amber-600">
-                  Applying only fills in the fields below — nothing is saved until you click <strong>Save Changes</strong> at the bottom of this page.
+                  Saving updates this tool&apos;s result configuration and the category on each existing option. It does not publish the tool.
                 </p>
               </div>
             )}
@@ -551,6 +815,16 @@ export default function ToolSettingsPage() {
                   {liveValidation.warnings.map((w, i) => <li key={i}>{w}</li>)}
                 </ul>
               </div>
+            )}
+
+            {liveConfigs && questions.length > 0 && (
+              <TestOutcomeMapping
+                questions={questions}
+                scoringConfig={liveConfigs.scoring}
+                resultConfig={liveConfigs.result}
+                resultStrategy={strategy}
+                toolId={id}
+              />
             )}
           </section>
         )}

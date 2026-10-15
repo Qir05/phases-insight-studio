@@ -50,18 +50,14 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Expire any existing pending invitation for this email + role + workspace
-  const expireQuery = db
+  // Expire every pending invitation for this email (any role/workspace) so an
+  // older, possibly higher-privilege link can never be used after a re-invite.
+  const { error: expireErr } = await db
     .from('invitations')
     .update({ expires_at: new Date().toISOString() })
     .eq('email', email)
-    .eq('role', role)
     .is('accepted_at', null);
-
-  if (workspace_id) expireQuery.eq('workspace_id', workspace_id);
-  else              expireQuery.is('workspace_id', null);
-
-  await expireQuery;
+  if (expireErr) console.error('[users/invite] failed to expire old invites:', expireErr);
 
   // Create invitation
   const { data: invite, error: invErr } = await db

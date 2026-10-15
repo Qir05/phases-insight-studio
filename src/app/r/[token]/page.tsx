@@ -7,23 +7,28 @@ import type { StructuredResult } from '@/lib/groq';
 import { notFound } from 'next/navigation';
 import { CheckCircle, ExternalLink } from 'lucide-react';
 import Link from 'next/link';
+import { isSafeUrl } from '@/lib/resultConfigValidation';
+
+export const dynamic = 'force-dynamic';
 
 interface PageProps {
   params: { token: string };
 }
 
 export default async function PublicResultPage({ params }: PageProps) {
+  if (!/^[a-f0-9]{32,128}$/i.test(params.token)) notFound();
+
   const db = getServiceClient();
 
   const { data: submission } = await db
     .from('submissions')
-    .select('*, tools(title, slug, description, provider_name, provider_logo_url)')
+    .select('first_name, last_name, ai_result, result_json, outcome_data, tools(title, slug, description, provider_name, provider_logo_url)')
     .eq('result_token', params.token)
-    .single();
+    .maybeSingle();
 
   if (!submission) notFound();
 
-  const tool = submission.tools as {
+  const tool = submission.tools as unknown as {
     title: string;
     slug: string;
     description: string | null;
@@ -108,7 +113,7 @@ export default async function PublicResultPage({ params }: PageProps) {
             )}
 
             {/* CTA */}
-            {outcome.cta_text && outcome.cta_url && (
+            {outcome.cta_text && isSafeUrl(outcome.cta_url) && (
               <div className="border-t border-gray-100 pt-5">
                 <a
                   href={outcome.cta_url}

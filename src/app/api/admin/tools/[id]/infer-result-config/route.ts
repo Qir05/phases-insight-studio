@@ -1,45 +1,43 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth';
 import { getServiceClient } from '@/lib/supabase';
-import type { Question, QuestionOption } from '@/lib/supabase';
+import type { Question, QuestionOption, ScoringConfig, ResultConfig } from '@/lib/supabase';
 import { getOptionLabel, getOptionValue, getOptionCategory, isOptionObject } from '@/lib/scoring';
-import Groq from 'groq-sdk';
+import { loadToolForAdmin } from '@/lib/toolAccess';
+import { generateJson, GroqConfigError } from '@/lib/groq';
+import { rateLimit } from '@/lib/rateLimit';
+import { validateResultConfig } from '@/lib/resultConfigValidation';
 
-function canAccessTool(role: string, workspaceId: string | null, toolWorkspaceId: string | null): boolean {
-  if (role === 'super_admin') return true;
-  return !!workspaceId && workspaceId === toolWorkspaceId;
-}
+export const maxDuration = 60;
 
-const SYSTEM_PROMPT = `You are a quiz scoring configuration expert for a health and wellness platform called Phases Insight Studio.
-You are given a quiz's EXISTING questions and answer options — you do not invent new ones.
-Your job is to infer a DRAFT scoring_config, result_config, and result_template that groups the existing options into a small number of plausible outcome types.
+const SYSTEM_PROMPT = `You are a quiz scoring configuration assistant for a health and wellness platform called Phases Insight Studio.
+You are given a quiz's EXISTING questions and answer options — you never invent, reword or drop questions or options.
+Your job is to infer a DRAFT scoring_config, result_config, result_template, AND an option-to-category mapping for every existing option.
 This is explicitly a draft for a human admin to review before publishing — never clinical, never a diagnosis, never presented as confirmed source material.
-You must respond with ONLY raw JSON — no markdown, no code fences, no explanation.`;
+Respond with ONLY one JSON object — no markdown, no code fences, no explanation.`;
+
+const CHOICE_TYPES = ['radio', 'checkbox', 'dropdown'];
 
 function buildPrompt(toolTitle: string, questions: Question[]): string {
   const qBlock = questions
-    .map((q) => {
+    .map((q, qi) => {
       const opts = (q.options as QuestionOption[] | null) ?? [];
       const optLines = opts
-        .map((o) => {
-          const label = getOptionLabel(o);
-          const value = getOptionValue(o);
-          const cat   = getOptionCategory(o);
-          return isOptionObject(o)
-            ? `  - "${label}" (value: ${value}${cat ? `, existing category: ${cat}` : ''})`
-            : `  - "${label}"`;
+        .map((o, oi) => {
+          const cat = getOptionCategory(o);
+          return `  ${oi + 1}. "${getOptionLabel(o)}"${cat ? ` (existing category: ${cat})` : ''}`;
         })
         .join('\n');
-      return `Question: "${q.label}" [variable: ${q.variable_name}]\n${optLines || '  (no options — free text answer)'}`;
+      return `Q${qi + 1}: "${q.label}"\n${optLines || '  (no options — free text answer, not scored)'}`;
     })
     .join('\n\n');
 
   return `Quiz title: ${toolTitle}
 
-EXISTING QUESTIONS AND OPTIONS — use ONLY these, do not invent new questions or options:
+EXISTING QUESTIONS AND OPTIONS (numbered) — use ONLY these:
 ${qBlock}
 
-Produce a DRAFT result configuration as a JSON object with exactly this shape:
+Produce a DRAFT as a JSON object with exactly this shape:
 {
   "scoring_config": { "type": "category", "categories": ["snake_case_id", "..."] },
   "result_config": {
@@ -49,19 +47,26 @@ Produce a DRAFT result configuration as a JSON object with exactly this shape:
         "title": "Outcome display title",
         "description": "2-3 sentence description grounded only in the option patterns given",
         "match": { "top_category": "snake_case_id" },
-        "recommendations": ["Recommendation 1", "Recommendation 2", "Recommendation 3"]
+        "recommendations": ["Recommendation 1", "Recommendation 2", "Recommendation 3"],
+        "cta_text": "",
+        "cta_url": ""
       }
     ]
   },
-  "result_template": "Instructions telling the AI to personalise the matched outcome using the user's actual answers. Must say: do not invent a new type, do not diagnose or prescribe, do not mention this is a draft."
+  "result_template": "Instructions telling the AI to personalise the matched outcome using the user's actual answers. Must say: do not invent a new type, do not diagnose or prescribe, do not mention this is a draft.",
+  "option_mappings": [
+    { "question": 1, "categories": ["category id for option 1", "category id for option 2", "..."] }
+  ]
 }
 
 Rules:
-- Group the EXISTING answer options into outcome categories based only on patterns already visible in their text.
-- Every outcome "id" must be snake_case and must appear in scoring_config.categories.
-- If options already have an "existing category" noted above, reuse those categories/ids exactly instead of inventing new ones.
-- Write cautious, non-clinical, educational descriptions and recommendations grounded only in the option text given — do not fabricate diagnoses or treatment claims.
-- Respond with ONLY the JSON object — no markdown, no commentary.`;
+- Group the EXISTING answer options into a small number of outcome categories based only on patterns visible in their text.
+- If options are lettered (A)/(B)/(C)/(D) and each letter consistently describes the same theme across questions, use one category per letter.
+- option_mappings: one entry per question that has options, with exactly one category id per option, in the same order as listed. Use null for an option that should not count.
+- Every outcome "id" must be snake_case, must appear in scoring_config.categories, and must equal its match.top_category.
+- If options already have an "existing category", reuse those ids exactly.
+- Leave cta_text and cta_url empty — the admin fills them in.
+- Write cautious, non-clinical, educational descriptions and recommendations — no diagnoses or treatment claims.`;
 }
 
 export async function POST(
@@ -71,77 +76,90 @@ export async function POST(
   const auth = await requireAuth();
   if (auth instanceof NextResponse) return auth;
 
-  const db = getServiceClient();
-  const { data: tool, error: toolErr } = await db
-    .from('tools')
-    .select('*')
-    .eq('id', params.id)
-    .single();
+  const access = await loadToolForAdmin(params.id, auth.profile);
+  if ('response' in access) return access.response;
+  const tool = access.tool;
 
-  if (toolErr || !tool) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-
-  if (!canAccessTool(auth.profile.role, auth.profile.workspace_id, tool.workspace_id)) {
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  if (!rateLimit(`infer:${auth.user.id}`, 10, 60_000).ok) {
+    return NextResponse.json({ error: 'Too many draft generations — wait a minute and try again.' }, { status: 429 });
   }
 
+  const db = getServiceClient();
   const { data: questionsRaw, error: qErr } = await db
     .from('questions')
     .select('*')
     .eq('tool_id', params.id)
     .order('order_index');
 
-  if (qErr) return NextResponse.json({ error: qErr.message }, { status: 500 });
+  if (qErr) {
+    console.error('[infer-result-config] questions', qErr);
+    return NextResponse.json({ error: 'Failed to load questions' }, { status: 500 });
+  }
 
   const questions = (questionsRaw ?? []) as Question[];
-  if (questions.length === 0) {
+  const choiceQuestions = questions.filter((q) => CHOICE_TYPES.includes(q.field_type) && Array.isArray(q.options) && q.options.length > 0);
+  if (choiceQuestions.length === 0) {
     return NextResponse.json(
-      { error: 'This tool has no questions yet. Add questions first, then generate a draft result config.' },
+      { error: 'This tool has no multiple-choice questions yet. Add questions with options first, then generate a draft result config.' },
       { status: 400 }
     );
   }
 
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json({ error: 'GROQ_API_KEY is not configured on the server.' }, { status: 500 });
-  }
-
-  const client = new Groq({ apiKey });
-
-  let rawResponse: string;
+  let data: Record<string, unknown> | null;
+  let raw: string;
   try {
-    const completion = await client.chat.completions.create({
-      model:       'llama-3.3-70b-versatile',
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user',   content: buildPrompt(tool.title, questions) },
-      ],
-      max_tokens:  3000,
-      temperature: 0.2,
-    });
-    rawResponse = completion.choices[0]?.message?.content ?? '';
+    ({ data, raw } = await generateJson(SYSTEM_PROMPT, buildPrompt(tool.title, questions), 4000));
   } catch (err) {
+    if (err instanceof GroqConfigError) return NextResponse.json({ error: err.message }, { status: 500 });
     console.error('[infer-result-config] Groq error:', err);
-    return NextResponse.json({ error: 'AI generation failed. Please try again.' }, { status: 500 });
+    return NextResponse.json({ error: 'AI generation failed. Please try again.' }, { status: 502 });
   }
 
-  const cleaned = rawResponse
-    .trim()
-    .replace(/^```json\s*/i, '')
-    .replace(/^```\s*/, '')
-    .replace(/\s*```$/, '')
-    .trim();
-
-  let draft: Record<string, unknown>;
-  try {
-    draft = JSON.parse(cleaned);
-  } catch {
-    console.error('[infer-result-config] JSON parse failed. Raw:', rawResponse.slice(0, 1000));
+  if (!data) {
+    console.error('[infer-result-config] JSON parse failed. Raw:', raw.slice(0, 1000));
     return NextResponse.json(
-      { error: 'AI returned malformed JSON. Please try again.', raw_preview: rawResponse.slice(0, 300) },
+      { error: 'AI returned malformed JSON. Please try again.', raw_preview: raw.slice(0, 300) },
       { status: 422 }
     );
   }
 
-  // Never saved here — the admin reviews/edits and saves via the normal Settings form.
-  return NextResponse.json({ draft });
+  // Convert the AI's index-based mapping into an id/label-based mapping the
+  // admin reviews. Labels always come from the database, never from the AI.
+  const aiMappings = Array.isArray(data.option_mappings) ? (data.option_mappings as { question?: number; categories?: unknown[] }[]) : [];
+  const option_mappings = questions
+    .map((q, qi) => {
+      const opts = (q.options as QuestionOption[] | null) ?? [];
+      if (!CHOICE_TYPES.includes(q.field_type) || opts.length === 0) return null;
+      const ai = aiMappings.find((m) => Number(m?.question) === qi + 1);
+      return {
+        question_id: q.id,
+        question_label: q.label,
+        options: opts.map((o, oi) => {
+          const proposed = ai?.categories?.[oi];
+          return {
+            label: getOptionLabel(o),
+            value: isOptionObject(o) ? getOptionValue(o) : (getOptionLabel(o).match(/^\(([A-Z])\)/)?.[1] ?? getOptionLabel(o)),
+            category: getOptionCategory(o) ?? (typeof proposed === 'string' && proposed.trim() ? proposed.trim() : null),
+          };
+        }),
+      };
+    })
+    .filter(Boolean);
+
+  const draft = {
+    result_strategy: 'hybrid_ai_with_outcome' as const,
+    scoring_config:  (data.scoring_config ?? null) as ScoringConfig | null,
+    result_config:   (data.result_config ?? null) as ResultConfig | null,
+    result_template: typeof data.result_template === 'string' ? data.result_template : null,
+    option_mappings,
+  };
+
+  const merged = questions.map((q) => {
+    const m = option_mappings.find((x) => x!.question_id === q.id);
+    return m ? { ...q, options: m.options.map((o) => ({ label: o.label, value: o.value, ...(o.category ? { category: o.category } : {}) })) } : q;
+  });
+  const validation = validateResultConfig('ai_result', draft.result_strategy, draft.scoring_config, draft.result_config, merged);
+
+  // Never saved here — the admin reviews/edits and saves via apply-result-config.
+  return NextResponse.json({ draft, validation });
 }

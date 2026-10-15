@@ -35,12 +35,24 @@ export async function PATCH(
   const auth = await requireSuperAdmin();
   if (auth instanceof NextResponse) return auth;
 
-  const body = await req.json();
-  const db   = getServiceClient();
+  let body: Record<string, unknown>;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
 
+  // Whitelist — id, slug and created_at can never be changed through this route.
+  const EDITABLE = ['name', 'logo_url', 'primary_color', 'ghl_webhook_url', 'ghl_tag', 'is_active'];
+  const patch = Object.fromEntries(EDITABLE.filter((k) => body[k] !== undefined).map((k) => [k, body[k]]));
+  if (Object.keys(patch).length === 0) {
+    return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
+  }
+
+  const db = getServiceClient();
   const { data, error } = await db
     .from('workspaces')
-    .update(body)
+    .update(patch)
     .eq('id', params.id)
     .select()
     .single();

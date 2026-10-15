@@ -7,12 +7,17 @@ export const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-// Server-only admin client – never expose to browser
+// Server-only admin client – never expose to browser.
+// Next.js 14 caches fetch() in GET route handlers and server components by
+// default (Vercel Data Cache), which made public quiz/result reads serve stale
+// rows after an admin edit or publish. Database reads must always be fresh.
+const noStoreFetch: typeof fetch = (input, init) => fetch(input, { ...init, cache: 'no-store' });
+
 export function getServiceClient() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { persistSession: false } }
+    { auth: { persistSession: false }, global: { fetch: noStoreFetch } }
   );
 }
 
@@ -51,7 +56,14 @@ export interface ResultConfig {
 export interface ScoringConfig {
   type:        'category' | 'points';
   categories?: string[];
+  /** Category-mode tie resolution. Defaults to 'category_order'. See scoreSubmission(). */
+  tie_breaker?:    'category_order' | 'first_answered' | 'tie_outcome';
+  /** Outcome id shown on any tie when tie_breaker = 'tie_outcome'. */
+  tie_outcome_id?: string;
 }
+
+/** Publishing state (009_publish_status_and_rls.sql). Missing column ⇒ treated as 'published'. */
+export type ToolStatus = 'draft' | 'published';
 
 // ── Database entity types ─────────────────────────────────────────────────────
 
@@ -116,6 +128,8 @@ export interface Tool {
   result_config:   ResultConfig  | null;
   result_template: string | null;
   admin_notes:     string | null;
+  // Publishing (009_publish_status_and_rls.sql) — optional until the migration runs
+  status?:         ToolStatus | null;
   created_at: string;
   updated_at: string;
 }

@@ -48,7 +48,7 @@ const MOCK_RESULT: StructuredResult = {
   cta: 'Reach out to the team to discuss your results and explore next steps tailored to your situation.',
 };
 
-function isStructuredResult(value: unknown): value is StructuredResult {
+export function isStructuredResult(value: unknown): value is StructuredResult {
   if (!value || typeof value !== 'object') return false;
   const o = value as Record<string, unknown>;
   return (
@@ -68,11 +68,15 @@ export async function generateResult(userPrompt: string): Promise<GenerateResult
   const apiKey = process.env.GROQ_API_KEY;
 
   if (!apiKey) {
+    // Never show placeholder copy to real respondents — only allow the mock outside production.
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('GROQ_API_KEY is not configured');
+    }
     console.warn('[groq] GROQ_API_KEY is not set — returning mock result');
     return { raw: JSON.stringify(MOCK_RESULT, null, 2), parsed: MOCK_RESULT, model: 'mock' };
   }
 
-  const client = new Groq({ apiKey });
+  const client = new Groq({ apiKey, timeout: 25_000, maxRetries: 1 });
 
   const completion = await client.chat.completions.create({
     model: GROQ_MODEL,
@@ -96,6 +100,42 @@ export async function generateResult(userPrompt: string): Promise<GenerateResult
   }
 
   return { raw: text, parsed, model: GROQ_MODEL };
+}
+
+export class GroqConfigError extends Error {}
+
+/**
+ * JSON-mode completion used by the admin AI helpers (Import Wizard, Migration
+ * Assistant). Throws GroqConfigError when no key is configured, and passes
+ * Groq/network errors through. `data` is null when the reply was not valid JSON.
+ */
+export async function generateJson(
+  system: string,
+  user: string,
+  maxTokens: number,
+): Promise<{ data: Record<string, unknown> | null; raw: string }> {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) throw new GroqConfigError('GROQ_API_KEY is not configured on the server.');
+
+  const client = new Groq({ apiKey, timeout: 50_000, maxRetries: 1 });
+  const completion = await client.chat.completions.create({
+    model: GROQ_MODEL,
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ],
+    max_tokens: maxTokens,
+    temperature: 0.2,
+    response_format: { type: 'json_object' },
+  });
+  const raw = completion.choices[0]?.message?.content ?? '';
+  const cleaned = raw.trim().replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/\s*```$/, '').trim();
+  try {
+    const parsed = JSON.parse(cleaned);
+    return { data: parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null, raw };
+  } catch {
+    return { data: null, raw };
+  }
 }
 
 // Renders a StructuredResult as markdown so ai_result stays a valid, readable
@@ -122,4 +162,19 @@ ${steps}
 *${result.disclaimer}*
 
 ${result.cta}`;
+}
+
+// Hybrid mode: the page already shows the outcome title, description,
+// recommendations and the standard disclaimer, so the personalised section
+// only carries the parts that are specific to this respondent.
+export function hybridResultToMarkdown(result: StructuredResult): string {
+  const patterns = result.key_patterns_from_answers.map((p) => `- ${p}`).join('\n');
+  const steps = result.recommended_next_steps.map((s, i) => `${i + 1}. ${s}`).join('\n');
+  return [
+    result.short_summary,
+    result.why_this_result ? `### Why This Fits You\n${result.why_this_result}` : '',
+    patterns ? `### What Stood Out In Your Answers\n${patterns}` : '',
+    steps ? `### Practical Next Steps\n${steps}` : '',
+    result.cta ? `\n${result.cta}` : '',
+  ].filter(Boolean).join('\n\n');
 }

@@ -27,13 +27,13 @@ export async function POST(
     return NextResponse.json({ error: 'Workspace not found.' }, { status: 404 });
   }
 
-  // Expire any existing pending invite for this email+workspace
-  await db
+  // Expire every pending invite for this email so older links stop working
+  const { error: expireErr } = await db
     .from('invitations')
     .update({ expires_at: new Date().toISOString() })
     .eq('email', email)
-    .eq('workspace_id', params.id)
     .is('accepted_at', null);
+  if (expireErr) console.error('[workspace invite] failed to expire old invites:', expireErr);
 
   // Create new invitation
   const { data: invite, error: invErr } = await db

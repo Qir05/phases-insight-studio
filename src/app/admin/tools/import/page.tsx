@@ -15,37 +15,17 @@ import {
   RotateCcw,
   PenSquare,
   Braces,
+  Eye,
+  Settings,
 } from 'lucide-react';
-import { validateResultConfig } from '@/lib/resultConfigValidation';
-import type { ResultStrategy, ScoringConfig, ResultConfig, QuestionOption } from '@/lib/supabase';
+import { normalizeImportConfig } from '@/lib/importConfig';
+import { getOptionCategory, getOptionLabel } from '@/lib/scoring';
+import TestOutcomeMapping from '@/components/TestOutcomeMapping';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type WizardStep = 'input' | 'generating' | 'review' | 'saving' | 'done';
 type InputMode  = 'paste' | 'file' | 'json';
-
-interface ImportedQuestion {
-  label:         string;
-  variable_name: string;
-  field_type:    string;
-  options?:      unknown[] | null;
-  required?:     boolean;
-  scoring_key?:  string | null;
-  category?:     string | null;
-}
-
-interface DraftConfig {
-  title:           string;
-  slug?:           string;
-  description?:    string;
-  result_strategy: string;
-  system_prompt?:  string | null;
-  result_template?: string | null;
-  scoring_config?: unknown;
-  result_config?:  unknown;
-  questions:       ImportedQuestion[];
-  [key: string]: unknown;
-}
 
 const SOURCE_LABELS = [
   { value: 'FormWise quiz setup and instructions',        label: 'FormWise Setup / Instructions' },
@@ -56,7 +36,7 @@ const SOURCE_LABELS = [
   { value: 'general quiz or survey content',              label: 'Other / General Content' },
 ];
 
-// ── PDF text extraction (client-side, no dependencies) ────────────────────────
+// ── File text extraction (client-side, no dependencies) ───────────────────────
 
 async function extractTextFromFile(file: File): Promise<string> {
   if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
@@ -65,22 +45,23 @@ async function extractTextFromFile(file: File): Promise<string> {
   return file.text();
 }
 
-async function extractPdfText(file: File): Promise<string> {
-  const buffer  = await file.arrayBuffer();
-  const bytes   = new Uint8Array(buffer);
-  const decoder = new TextDecoder('latin1');
-  const raw     = decoder.decode(bytes);
+async function inflate(bytes: Uint8Array): Promise<Uint8Array | null> {
+  try {
+    const stream = new Blob([bytes.slice()]).stream().pipeThrough(new DecompressionStream('deflate'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  } catch {
+    return null;
+  }
+}
 
-  const parts: string[] = [];
-
-  // Extract text from PDF BT...ET content streams (plain text PDFs)
+function textFromContentStream(content: string, parts: string[]) {
   const btEtRegex = /BT\s*([\s\S]*?)\s*ET/g;
   let block: RegExpExecArray | null;
-  while ((block = btEtRegex.exec(raw)) !== null) {
-    const content   = block[1];
-    const strRegex  = /\(([^)\\]*(?:\\.[^)\\]*)*)\)/g;
+  while ((block = btEtRegex.exec(content)) !== null) {
+    const strRegex = /\(([^)\\]*(?:\\.[^)\\]*)*)\)/g;
     let str: RegExpExecArray | null;
-    while ((str = strRegex.exec(content)) !== null) {
+    const line: string[] = [];
+    while ((str = strRegex.exec(block[1])) !== null) {
       const decoded = str[1]
         .replace(/\\n/g, '\n')
         .replace(/\\r/g, '')
@@ -88,22 +69,37 @@ async function extractPdfText(file: File): Promise<string> {
         .replace(/\\\(/g, '(')
         .replace(/\\\)/g, ')')
         .replace(/\\\\/g, '\\');
-      if (decoded.trim().length > 0) parts.push(decoded.trim());
+      if (decoded.length > 0) line.push(decoded);
     }
+    if (line.length > 0) parts.push(line.join(''));
+  }
+}
+
+async function extractPdfText(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const raw   = new TextDecoder('latin1').decode(bytes);
+  const parts: string[] = [];
+
+  // Most PDFs compress their page content with FlateDecode — inflate each stream first.
+  const streamRe = /stream\r?\n/g;
+  let m: RegExpExecArray | null;
+  while ((m = streamRe.exec(raw)) !== null) {
+    const start = m.index + m[0].length;
+    const end = raw.indexOf('endstream', start);
+    if (end === -1) break;
+    const dict = raw.slice(Math.max(0, m.index - 400), m.index);
+    if (dict.includes('/FlateDecode')) {
+      const inflated = await inflate(bytes.subarray(start, end));
+      if (inflated) textFromContentStream(new TextDecoder('latin1').decode(inflated), parts);
+    }
+    streamRe.lastIndex = end;
   }
 
-  if (parts.length > 0) {
-    return parts.join(' ').replace(/\s{2,}/g, ' ').trim();
-  }
+  // Uncompressed content streams
+  textFromContentStream(raw, parts);
 
-  // Fallback: extract visible ASCII characters (works for some PDFs)
-  const fallback = Array.from(bytes)
-    .map((b) => (b >= 32 && b < 127) || b === 10 || b === 13 ? String.fromCharCode(b) : ' ')
-    .join('')
-    .replace(/\s{3,}/g, ' ')
-    .trim();
-
-  return fallback.length > 100 ? fallback : '';
+  const text = parts.join('\n').replace(/[ \t]{2,}/g, ' ').trim();
+  return text.length > 50 ? text : '';
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -118,14 +114,20 @@ export default function ImportToolPage() {
   const [fileName,    setFileName]    = useState('');
   const [jsonText,    setJsonText]    = useState('');
   const [draftJson,   setDraftJson]   = useState('');
-  const [draftTitle,  setDraftTitle]  = useState('');
-  const [draftQCount, setDraftQCount] = useState(0);
   const [error,       setError]       = useState('');
   const [rawPreview,  setRawPreview]  = useState('');
-  const [createdId,   setCreatedId]   = useState('');
+  const [confirmed,   setConfirmed]   = useState(false);
+  const [showJson,    setShowJson]    = useState(false);
+  const [created,     setCreated]     = useState<{ id: string; slug: string; title: string; questions: number; draftSupported: boolean } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fileTextRef  = useRef<string>('');
+
+  function enterReview(config: unknown) {
+    setDraftJson(JSON.stringify(config, null, 2));
+    setConfirmed(false);
+    setStep('review');
+  }
 
   // ── File handling ───────────────────────────────────────────────────────────
 
@@ -134,24 +136,41 @@ export default function ImportToolPage() {
     if (!file) return;
     setFileName(file.name);
     setError('');
+    fileTextRef.current = '';
 
-    const isAllowed = file.type === 'application/pdf'
+    const name = file.name.toLowerCase();
+    const isJson = name.endsWith('.json') || file.type === 'application/json';
+    const isAllowed = isJson
+      || file.type === 'application/pdf'
       || file.type === 'text/plain'
-      || file.name.endsWith('.txt')
-      || file.name.endsWith('.md')
-      || file.name.endsWith('.csv')
-      || file.name.endsWith('.pdf');
+      || ['.txt', '.md', '.csv', '.pdf'].some((ext) => name.endsWith(ext));
 
     if (!isAllowed) {
-      setError('Unsupported file type. Please upload a .txt, .md, .csv, or .pdf file.');
+      setError('Unsupported file type. Please upload a .txt, .md, .csv, .pdf or .json file.');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setError('File is too large (max 5 MB). Paste the relevant part instead.');
       return;
     }
 
     try {
+      if (isJson) {
+        // A JSON export is a finished config — no AI call, straight to review.
+        const text = await file.text();
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          setError('This .json file is not valid JSON.');
+          return;
+        }
+        enterReview(parsed);
+        return;
+      }
       const text = await extractTextFromFile(file);
       if (!text || text.length < 50) {
-        setError('Could not extract enough text from this file. Try copying and pasting the content directly.');
-        fileTextRef.current = '';
+        setError('Could not extract enough text from this file (scanned or image-based PDFs have no text layer). Copy and paste the content instead.');
       } else {
         fileTextRef.current = text;
       }
@@ -187,24 +206,20 @@ export default function ImportToolPage() {
         body: JSON.stringify({ text: text.trim(), source_label: sourceLabel }),
       });
 
-      const json = await res.json() as {
-        config?:      DraftConfig;
+      const json = await res.json().catch(() => ({})) as {
+        config?:      unknown;
         error?:       string;
         raw_preview?: string;
       };
 
-      if (!res.ok) {
+      if (!res.ok || !json.config) {
         setError(json.error ?? 'Generation failed. Please try again.');
         if (json.raw_preview) setRawPreview(json.raw_preview);
         setStep('input');
         return;
       }
 
-      const config = json.config!;
-      setDraftJson(JSON.stringify(config, null, 2));
-      setDraftTitle(config.title ?? 'Untitled Quiz');
-      setDraftQCount(Array.isArray(config.questions) ? config.questions.length : 0);
-      setStep('review');
+      enterReview(json.config);
     } catch {
       setError('Network error. Please check your connection and try again.');
       setStep('input');
@@ -218,138 +233,74 @@ export default function ImportToolPage() {
       setError('Paste a JSON config first.');
       return;
     }
-
-    let config: DraftConfig;
+    let config: unknown;
     try {
-      config = JSON.parse(jsonText) as DraftConfig;
+      config = JSON.parse(jsonText);
     } catch {
       setError('The pasted JSON is not valid. Fix any syntax errors and try again.');
       return;
     }
-
-    if (!config.title || typeof config.title !== 'string') {
-      setError('The pasted JSON is missing a "title" field.');
-      return;
-    }
-
     setError('');
-    setDraftJson(JSON.stringify(config, null, 2));
-    setDraftTitle(config.title);
-    setDraftQCount(Array.isArray(config.questions) ? config.questions.length : 0);
-    setStep('review');
+    enterReview(config);
   }
 
-  // ── Live validation of the draft JSON (gates the Create button) ──────────────
+  // ── Live validation — same normaliser the server runs before saving ─────────
 
-  const draftValidation = useMemo(() => {
-    let config: DraftConfig | null = null;
+  const review = useMemo(() => {
+    let parsed: unknown;
     try {
-      config = JSON.parse(draftJson) as DraftConfig;
+      parsed = JSON.parse(draftJson);
     } catch {
-      return { parseError: 'The JSON is not valid — fix syntax errors before saving.', errors: [] as string[], warnings: [] as string[] };
+      return { parseError: 'The JSON is not valid — fix syntax errors before saving.', config: null, errors: [] as string[], warnings: [] as string[], raw: null };
     }
-
-    if (!config?.title?.trim()) {
-      return { parseError: null, errors: ['Missing "title".'], warnings: [] as string[] };
-    }
-
-    const questions = Array.isArray(config.questions) ? config.questions : [];
-    const { errors, warnings } = validateResultConfig(
-      'ai_result',
-      (config.result_strategy as ResultStrategy) ?? 'ai_generated',
-      (config.scoring_config as ScoringConfig | null) ?? null,
-      (config.result_config as ResultConfig | null) ?? null,
-      questions.map((q) => ({ options: (q.options as QuestionOption[] | null) ?? null })),
-    );
-
-    if (questions.length === 0) {
-      errors.push('No questions in the config.');
-    }
-
-    return { parseError: null, errors, warnings };
+    const { config, errors, warnings } = normalizeImportConfig(parsed);
+    return { parseError: null, config, errors, warnings, raw: parsed as Record<string, unknown> };
   }, [draftJson]);
 
-  // ── Create tool ─────────────────────────────────────────────────────────────
+  const canSave = !review.parseError && review.errors.length === 0 && !!review.config && confirmed;
+
+  // ── Create tool (single atomic request) ─────────────────────────────────────
 
   async function createTool() {
-    let config: DraftConfig;
-    try {
-      config = JSON.parse(draftJson) as DraftConfig;
-    } catch {
-      setError('The JSON is not valid. Fix any syntax errors before saving.');
-      return;
-    }
-
-    if (!config.title?.trim()) {
-      setError('The config is missing a title.');
-      return;
-    }
-
-    if (draftValidation.errors.length > 0) {
-      setError('Fix the issues listed above before creating this tool.');
-      return;
-    }
-
+    if (!canSave || !review.raw) return;
     setError('');
     setStep('saving');
 
-    // 1. Create the tool
-    const toolRes = await fetch('/api/admin/tools', {
+    const res = await fetch('/api/admin/tools/import/commit', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title:           config.title,
-        slug:            config.slug            ?? null,
-        description:     config.description     ?? null,
-        system_prompt:   config.system_prompt   ?? null,
-        result_strategy: config.result_strategy ?? 'ai_generated',
-        result_template: config.result_template ?? null,
-        scoring_config:  config.scoring_config  ?? null,
-        result_config:   config.result_config   ?? null,
-        tool_mode:       'ai_result',
-        email_capture_enabled: true,
-        phone_capture_enabled: false,
-        ghl_enabled:     false,
-      }),
+      body: JSON.stringify({ config: review.raw, confirmed: true }),
     });
+    const json = await res.json().catch(() => ({})) as {
+      tool?: { id: string; slug: string; title: string };
+      questions_created?: number;
+      draft_supported?: boolean;
+      error?: string;
+      errors?: string[];
+    };
 
-    const toolJson = await toolRes.json() as { tool?: { id: string }; error?: string };
-
-    if (!toolRes.ok || !toolJson.tool) {
-      setError(toolJson.error ?? 'Failed to create tool. Check the config and try again.');
+    if (!res.ok || !json.tool) {
+      setError(json.error ?? 'Failed to create the tool. Nothing was saved.');
       setStep('review');
       return;
     }
 
-    const toolId = toolJson.tool.id;
-
-    // 2. Create questions in order
-    const questions = Array.isArray(config.questions) ? config.questions : [];
-    for (const q of questions) {
-      await fetch(`/api/admin/tools/${toolId}/questions`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          label:         q.label,
-          variable_name: q.variable_name,
-          field_type:    q.field_type || 'radio',
-          options:       q.options    ?? null,
-          required:      q.required   ?? true,
-          scoring_key:   q.scoring_key ?? null,
-          category:      q.category   ?? null,
-        }),
-      });
-    }
-
-    setCreatedId(toolId);
+    setCreated({
+      id: json.tool.id,
+      slug: json.tool.slug,
+      title: json.tool.title,
+      questions: json.questions_created ?? 0,
+      draftSupported: json.draft_supported !== false,
+    });
     setStep('done');
   }
 
   // ── Render ───────────────────────────────────────────────────────────────────
 
+  const cfg = review.config;
+
   return (
     <div className="max-w-3xl">
-      {/* Back */}
       <Link
         href="/admin"
         className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-800 mb-6 transition-colors"
@@ -363,58 +314,41 @@ export default function ImportToolPage() {
         </div>
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Import Quiz Wizard</h1>
-          <p className="text-sm text-gray-500">Paste or upload source material — AI generates the full quiz config.</p>
+          <p className="text-sm text-gray-500">Import → Review → Validate → Test → Save as draft. Nothing goes live until you publish.</p>
         </div>
       </div>
 
-      {/* Step indicator */}
       <StepIndicator current={step} />
 
       {/* ── Step: input ── */}
       {(step === 'input' || step === 'generating') && (
         <div className="space-y-5 mt-6">
-          {/* Input mode toggle */}
-          <div className="bg-white rounded-2xl border border-gray-100 p-6 space-y-5">
+          <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-6 space-y-5">
             <div>
               <h2 className="font-semibold text-gray-800 mb-1">Source Material</h2>
-              <p className="text-xs text-gray-400">Paste any source text or upload a file. The AI will read it and generate a draft quiz config.</p>
+              <p className="text-xs text-gray-400">Paste source text, upload a file, or paste a finished JSON config.</p>
             </div>
 
-            {/* Paste / Upload toggle */}
-            <div className="inline-flex rounded-xl bg-gray-100 p-1">
-              <button
-                type="button"
-                onClick={() => { setInputMode('paste'); setError(''); }}
-                className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                  inputMode === 'paste' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                <FileText size={14} className="inline-block mr-1.5 -mt-0.5" />
-                Paste Text
-              </button>
-              <button
-                type="button"
-                onClick={() => { setInputMode('file'); setError(''); }}
-                className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                  inputMode === 'file' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                <Upload size={14} className="inline-block mr-1.5 -mt-0.5" />
-                Upload File
-              </button>
-              <button
-                type="button"
-                onClick={() => { setInputMode('json'); setError(''); }}
-                className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                  inputMode === 'json' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                <Braces size={14} className="inline-block mr-1.5 -mt-0.5" />
-                Paste JSON Config
-              </button>
+            <div className="flex flex-wrap rounded-xl bg-gray-100 p-1 gap-1 w-full sm:w-auto sm:inline-flex">
+              {([
+                { mode: 'paste', icon: FileText, label: 'Paste Text' },
+                { mode: 'file',  icon: Upload,   label: 'Upload File' },
+                { mode: 'json',  icon: Braces,   label: 'Paste JSON Config' },
+              ] as const).map(({ mode, icon: Icon, label }) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => { setInputMode(mode); setError(''); }}
+                  className={`flex-1 sm:flex-none px-3 sm:px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                    inputMode === mode ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  <Icon size={14} className="inline-block mr-1.5 -mt-0.5" />
+                  {label}
+                </button>
+              ))}
             </div>
 
-            {/* Source label — not applicable when pasting a ready-made JSON config */}
             {inputMode !== 'json' && (
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">
@@ -430,12 +364,11 @@ export default function ImportToolPage() {
                   ))}
                 </select>
                 <p className="text-xs text-gray-400 mt-1">
-                  Helps the AI understand context and generate a better quiz structure.
+                  The AI copies questions, results and CTAs from the source. Anything the source doesn&apos;t contain (e.g. scoring rules) is flagged for you instead of being invented.
                 </p>
               </div>
             )}
 
-            {/* Paste textarea */}
             {inputMode === 'paste' && (
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">
@@ -446,7 +379,7 @@ export default function ImportToolPage() {
                   value={pasteText}
                   onChange={(e) => { setPasteText(e.target.value); setError(''); }}
                   className={`${input} resize-y font-mono text-xs leading-relaxed`}
-                  placeholder={`Paste your FormWise quiz setup, quiz questions and answers, transcript, or any other source material here.\n\nFor the Bendy Menopause Type Quiz, paste:\n- The quiz title and description\n- All questions with their answer options\n- The result types (e.g. Hormone Support Type, Liver Support Type)\n- Descriptions and recommendations for each type`}
+                  placeholder={`Paste your FormWise quiz setup, quiz questions and answers, transcript, or any other source material here.\n\nFor a type quiz, include:\n- The quiz title and description\n- All questions with their answer options\n- How answers map to result types (e.g. "mostly A's = …")\n- Each result's description, recommendations and CTA link`}
                   disabled={step === 'generating'}
                 />
                 <p className="text-xs text-gray-400 mt-1">
@@ -458,14 +391,16 @@ export default function ImportToolPage() {
               </div>
             )}
 
-            {/* File upload */}
             {inputMode === 'file' && (
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">
-                  Upload file (.txt, .md, .csv, .pdf) *
+                  Upload file (.txt, .md, .csv, .pdf, .json) *
                 </label>
                 <div
+                  role="button"
+                  tabIndex={0}
                   onClick={() => fileInputRef.current?.click()}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click(); }}
                   className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors ${
                     fileName ? 'border-indigo-300 bg-indigo-50' : 'border-gray-200 hover:border-indigo-300 hover:bg-indigo-50'
                   }`}
@@ -473,31 +408,30 @@ export default function ImportToolPage() {
                   <Upload size={22} className={`mx-auto mb-2 ${fileName ? 'text-indigo-500' : 'text-gray-300'}`} />
                   {fileName ? (
                     <div>
-                      <p className="text-sm font-medium text-indigo-700">{fileName}</p>
+                      <p className="text-sm font-medium text-indigo-700 break-all">{fileName}</p>
                       <p className="text-xs text-indigo-500 mt-0.5">Click to change file</p>
                     </div>
                   ) : (
                     <div>
-                      <p className="text-sm text-gray-500">Click to browse, or drag and drop</p>
-                      <p className="text-xs text-gray-400 mt-0.5">.txt, .md, .csv, .pdf supported</p>
+                      <p className="text-sm text-gray-500">Click to browse</p>
+                      <p className="text-xs text-gray-400 mt-0.5">.txt, .md, .csv, .pdf, or a .json config export</p>
                     </div>
                   )}
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".txt,.md,.csv,.pdf,text/plain,application/pdf"
+                    accept=".txt,.md,.csv,.pdf,.json,text/plain,application/pdf,application/json"
                     onChange={handleFileChange}
                     className="hidden"
                     disabled={step === 'generating'}
                   />
                 </div>
                 <p className="text-xs text-gray-400 mt-1.5">
-                  For PDF: text is extracted automatically. If extraction is poor, copy-paste the content directly instead.
+                  PDF text is extracted in your browser. Scanned PDFs have no text layer — paste the content instead. A .json file skips the AI and opens straight in review.
                 </p>
               </div>
             )}
 
-            {/* Raw JSON config paste */}
             {inputMode === 'json' && (
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">
@@ -508,21 +442,20 @@ export default function ImportToolPage() {
                   value={jsonText}
                   onChange={(e) => { setJsonText(e.target.value); setError(''); }}
                   className={`${input} resize-y font-mono text-xs leading-relaxed`}
-                  placeholder={'{\n  "title": "Menopause Type Quiz",\n  "slug": "menopause-type-quiz",\n  "result_strategy": "hybrid_ai_with_outcome",\n  "scoring_config": {},\n  "result_config": {},\n  "questions": []\n}'}
+                  placeholder={'{\n  "title": "Menopause Type Quiz",\n  "slug": "menopause-type-quiz",\n  "result_strategy": "hybrid_ai_with_outcome",\n  "scoring_provenance": "source",\n  "scoring_config": { "type": "category", "categories": [] },\n  "result_config": { "outcomes": [] },\n  "questions": []\n}'}
                   spellCheck={false}
                 />
                 <p className="text-xs text-gray-400 mt-1">
-                  Use this if you already have a finished config — from a previous export, another tool, or hand-written. No AI call is made; it goes straight to the review step below.
+                  No AI call is made — the config goes straight to review.
                 </p>
               </div>
             )}
           </div>
 
-          {/* Error display */}
           {error && (
             <div className="bg-red-50 border border-red-100 rounded-xl px-4 py-3 flex items-start gap-2.5">
               <AlertCircle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
-              <div>
+              <div className="min-w-0">
                 <p className="text-sm text-red-700">{error}</p>
                 {rawPreview && (
                   <details className="mt-2">
@@ -534,7 +467,6 @@ export default function ImportToolPage() {
             </div>
           )}
 
-          {/* Generate / Load button */}
           <button
             type="button"
             onClick={inputMode === 'json' ? loadJsonDraft : generateDraft}
@@ -542,26 +474,17 @@ export default function ImportToolPage() {
             className="w-full bg-indigo-600 text-white py-3.5 rounded-xl font-semibold hover:bg-indigo-700 disabled:opacity-60 transition-colors flex items-center justify-center gap-2"
           >
             {step === 'generating' ? (
-              <>
-                <Loader2 size={17} className="animate-spin" />
-                Analyzing content with AI…
-              </>
+              <><Loader2 size={17} className="animate-spin" /> Analyzing content with AI…</>
             ) : inputMode === 'json' ? (
-              <>
-                <Braces size={17} />
-                Load JSON Draft
-              </>
+              <><Braces size={17} /> Load JSON Draft</>
             ) : (
-              <>
-                <Wand2 size={17} />
-                Generate Draft Tool Config
-              </>
+              <><Wand2 size={17} /> Generate Draft Tool Config</>
             )}
           </button>
 
           {step === 'generating' && (
             <p className="text-center text-xs text-gray-400">
-              This usually takes 5–15 seconds depending on content length.
+              This usually takes 5–20 seconds depending on content length.
             </p>
           )}
         </div>
@@ -570,85 +493,173 @@ export default function ImportToolPage() {
       {/* ── Step: review ── */}
       {(step === 'review' || step === 'saving') && (
         <div className="space-y-5 mt-6">
-          {/* Draft summary */}
-          <div className="bg-green-50 border border-green-100 rounded-2xl px-5 py-4 flex items-start gap-3">
-            <CheckCircle size={18} className="text-green-500 flex-shrink-0 mt-0.5" />
-            <div>
-              <p className="text-sm font-semibold text-green-800">Draft generated!</p>
-              <p className="text-xs text-green-600 mt-0.5">
-                <strong>{draftTitle}</strong> · {draftQCount} question{draftQCount !== 1 ? 's' : ''} · Review and edit the JSON below before saving.
-              </p>
+          {/* Summary */}
+          {cfg ? (
+            <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-6 space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                <div className="min-w-0">
+                  <h2 className="text-lg font-bold text-gray-900 break-words">{cfg.title}</h2>
+                  <p className="text-xs text-gray-400 font-mono mt-0.5">/t/{cfg.slug}</p>
+                  {cfg.description && <p className="text-sm text-gray-600 mt-1">{cfg.description}</p>}
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 font-medium">
+                    {cfg.result_strategy.replace(/_/g, ' ')}
+                  </span>
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 font-medium">
+                    {cfg.questions.length} question{cfg.questions.length === 1 ? '' : 's'}
+                  </span>
+                  {cfg.result_strategy !== 'ai_generated' && (
+                    <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold ${
+                      cfg.scoring_provenance === 'source' ? 'bg-green-50 text-green-700' : 'bg-amber-100 text-amber-800'
+                    }`}>
+                      Scoring {cfg.scoring_provenance === 'source' ? 'from source' : 'INFERRED'}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Questions</p>
+                <ol className="space-y-3">
+                  {cfg.questions.map((q, i) => (
+                    <li key={i} className="text-sm">
+                      <p className="font-medium text-gray-800 break-words">
+                        {i + 1}. {q.label}
+                        <span className="ml-2 text-[11px] font-normal text-gray-400">{q.field_type}{q.required ? '' : ' · optional'}</span>
+                      </p>
+                      {q.options && (
+                        <ul className="mt-1 space-y-0.5 pl-4">
+                          {q.options.map((o, oi) => {
+                            const cat = getOptionCategory(o);
+                            return (
+                              <li key={oi} className="text-xs text-gray-600 flex flex-wrap gap-x-2">
+                                <span className="break-words">{getOptionLabel(o)}</span>
+                                {cfg.result_strategy !== 'ai_generated' && (
+                                  <span className={`font-mono ${cat ? 'text-teal-600' : 'text-red-500'}`}>→ {cat ?? 'no category'}</span>
+                                )}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+
+              {cfg.result_config?.outcomes && (
+                <div>
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Outcomes</p>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {cfg.result_config.outcomes.map((o, i) => (
+                      <div key={i} className="border border-gray-100 rounded-xl p-3 text-xs space-y-1">
+                        <p className="text-sm font-semibold text-gray-900">{o.title || <span className="text-red-500">Missing title</span>}</p>
+                        <p className="font-mono text-gray-400">{o.id}</p>
+                        {o.description ? <p className="text-gray-600">{o.description}</p> : <p className="text-amber-600">No description</p>}
+                        {o.recommendations && o.recommendations.length > 0 && (
+                          <p className="text-gray-500">{o.recommendations.length} recommendation{o.recommendations.length === 1 ? '' : 's'}</p>
+                        )}
+                        <p className={o.cta_url ? 'text-gray-500' : 'text-amber-600'}>
+                          CTA: {o.cta_text || '—'} {o.cta_url ? `→ ${o.cta_url}` : '(no link)'}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {cfg.result_strategy === 'ai_generated' && (
+                <div>
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">AI instructions</p>
+                  <p className="text-xs text-gray-600 whitespace-pre-wrap">{cfg.result_template ?? cfg.system_prompt}</p>
+                </div>
+              )}
             </div>
-          </div>
+          ) : (
+            <div className="bg-white rounded-2xl border border-gray-100 p-6 text-sm text-gray-500">
+              Fix the errors below to see the quiz summary.
+            </div>
+          )}
+
+          {/* Validation */}
+          {review.parseError && (
+            <div className="bg-red-50 border border-red-100 rounded-xl px-4 py-3 flex items-start gap-2.5">
+              <AlertCircle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
+              <p className="text-sm text-red-700">{review.parseError}</p>
+            </div>
+          )}
+          {!review.parseError && review.errors.length > 0 && (
+            <div className="bg-red-50 border border-red-100 rounded-xl px-4 py-3 flex items-start gap-2.5">
+              <AlertCircle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-red-700 mb-1">Fix before saving:</p>
+                <ul className="text-xs text-red-600 list-disc list-inside space-y-0.5">
+                  {review.errors.map((e, i) => <li key={i}>{e}</li>)}
+                </ul>
+              </div>
+            </div>
+          )}
+          {!review.parseError && review.warnings.length > 0 && (
+            <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-3 flex items-start gap-2.5">
+              <AlertTriangle size={16} className="text-amber-500 flex-shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-amber-700 mb-1">Review carefully (won&apos;t block saving a draft):</p>
+                <ul className="text-xs text-amber-700 list-disc list-inside space-y-0.5">
+                  {review.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                </ul>
+              </div>
+            </div>
+          )}
+
+          {/* Test before saving */}
+          {cfg && cfg.result_strategy !== 'ai_generated' && cfg.scoring_config && cfg.result_config && (
+            <TestOutcomeMapping
+              questions={cfg.questions}
+              scoringConfig={cfg.scoring_config}
+              resultConfig={cfg.result_config}
+              resultStrategy={cfg.result_strategy}
+            />
+          )}
 
           {/* Editable JSON */}
-          <div className="bg-white rounded-2xl border border-gray-100 p-6 space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
+          <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-6 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setShowJson((v) => !v)}
+                className="text-left"
+              >
                 <h2 className="font-semibold text-gray-800 flex items-center gap-2">
                   <PenSquare size={15} className="text-gray-400" />
-                  Draft Config JSON
+                  Edit Config JSON {showJson ? '▾' : '▸'}
                 </h2>
                 <p className="text-xs text-gray-400 mt-0.5">
-                  Review carefully. Edit any field — titles, descriptions, options, categories, CTAs.
+                  Fix titles, options, categories, outcomes, CTA links — the summary and checks above update as you type.
                 </p>
-              </div>
+              </button>
               <button
                 type="button"
                 onClick={() => { setStep('input'); setError(''); }}
-                className="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg px-3 py-1.5 transition-colors"
+                className="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg px-3 py-1.5 transition-colors flex-shrink-0"
               >
-                <RotateCcw size={12} /> Re-generate
+                <RotateCcw size={12} /> Start over
               </button>
             </div>
 
-            <textarea
-              rows={30}
-              value={draftJson}
-              onChange={(e) => { setDraftJson(e.target.value); setError(''); }}
-              className="w-full border border-gray-200 rounded-xl px-4 py-3 text-xs font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y"
-              spellCheck={false}
-              disabled={step === 'saving'}
-            />
-
-            <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-3">
-              <p className="text-xs text-amber-700">
-                <strong>Before saving:</strong> Check that all <code>category</code> values on options exactly match the outcome <code>id</code> values in <code>result_config.outcomes</code>. Also fill in any <code>cta_url</code> fields.
-              </p>
-            </div>
+            {(showJson || !!review.parseError || review.errors.length > 0) && (
+              <textarea
+                rows={28}
+                value={draftJson}
+                onChange={(e) => { setDraftJson(e.target.value); setError(''); setConfirmed(false); }}
+                aria-label="Config JSON"
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-xs font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y"
+                spellCheck={false}
+                disabled={step === 'saving'}
+              />
+            )}
           </div>
 
-          {/* Live validation */}
-          {draftValidation.parseError && (
-            <div className="bg-red-50 border border-red-100 rounded-xl px-4 py-3 flex items-start gap-2.5">
-              <AlertCircle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
-              <p className="text-sm text-red-700">{draftValidation.parseError}</p>
-            </div>
-          )}
-          {!draftValidation.parseError && draftValidation.errors.length > 0 && (
-            <div className="bg-red-50 border border-red-100 rounded-xl px-4 py-3 flex items-start gap-2.5">
-              <AlertCircle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
-              <div>
-                <p className="text-sm font-medium text-red-700 mb-1">Fix before saving:</p>
-                <ul className="text-xs text-red-600 list-disc list-inside space-y-0.5">
-                  {draftValidation.errors.map((e, i) => <li key={i}>{e}</li>)}
-                </ul>
-              </div>
-            </div>
-          )}
-          {!draftValidation.parseError && draftValidation.warnings.length > 0 && (
-            <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-3 flex items-start gap-2.5">
-              <AlertTriangle size={16} className="text-amber-500 flex-shrink-0 mt-0.5" />
-              <div>
-                <p className="text-sm font-medium text-amber-700 mb-1">Worth a look (won&apos;t block saving):</p>
-                <ul className="text-xs text-amber-600 list-disc list-inside space-y-0.5">
-                  {draftValidation.warnings.map((w, i) => <li key={i}>{w}</li>)}
-                </ul>
-              </div>
-            </div>
-          )}
-
-          {/* Error */}
           {error && (
             <div className="bg-red-50 border border-red-100 rounded-xl px-4 py-3 flex items-start gap-2.5">
               <AlertCircle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
@@ -656,68 +667,75 @@ export default function ImportToolPage() {
             </div>
           )}
 
-          {/* Create button — only enabled once the draft JSON is valid */}
+          <label className="flex items-start gap-2.5 bg-white border border-gray-100 rounded-xl px-4 py-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={confirmed}
+              onChange={(e) => setConfirmed(e.target.checked)}
+              disabled={!!review.parseError || review.errors.length > 0}
+              className="accent-indigo-600 mt-0.5"
+            />
+            <span className="text-sm text-gray-700">
+              I have reviewed the questions, answer mappings, outcomes and CTAs above.
+              <span className="block text-xs text-gray-400 mt-0.5">The tool is saved as a <strong>draft</strong> — it stays private until you publish it from Settings.</span>
+            </span>
+          </label>
+
           <button
             type="button"
             onClick={createTool}
-            disabled={step === 'saving' || !!draftValidation.parseError || draftValidation.errors.length > 0}
-            className="w-full bg-indigo-600 text-white py-3.5 rounded-xl font-semibold hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+            disabled={step === 'saving' || !canSave}
+            className="w-full bg-indigo-600 text-white py-3.5 rounded-xl font-semibold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
           >
             {step === 'saving' ? (
-              <>
-                <Loader2 size={17} className="animate-spin" />
-                Creating tool and questions…
-              </>
+              <><Loader2 size={17} className="animate-spin" /> Saving tool and questions…</>
             ) : (
-              <>
-                Create Tool & Questions <ChevronRight size={17} />
-              </>
+              <>Save as Draft <ChevronRight size={17} /></>
             )}
           </button>
         </div>
       )}
 
       {/* ── Step: done ── */}
-      {step === 'done' && (
+      {step === 'done' && created && (
         <div className="mt-6 space-y-5">
           <div className="bg-green-50 border border-green-100 rounded-2xl px-6 py-8 text-center">
             <div className="w-14 h-14 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-4">
               <CheckCircle size={26} className="text-green-500" />
             </div>
-            <h2 className="text-xl font-bold text-green-900 mb-1">Tool Created!</h2>
+            <h2 className="text-xl font-bold text-green-900 mb-1">Draft Saved</h2>
             <p className="text-sm text-green-700">
-              <strong>{draftTitle}</strong> has been created with {draftQCount} question{draftQCount !== 1 ? 's' : ''}.
+              <strong>{created.title}</strong> was created with {created.questions} question{created.questions !== 1 ? 's' : ''}.
             </p>
+            {!created.draftSupported && (
+              <p className="text-xs text-amber-700 mt-2">
+                Note: draft mode needs migration 009 — until it runs, this tool is already public.
+              </p>
+            )}
           </div>
 
           <div className="bg-white rounded-2xl border border-gray-100 p-6 space-y-3">
-            <p className="text-sm font-medium text-gray-700">Next steps:</p>
-            <ul className="text-sm text-gray-600 space-y-2">
-              <li className="flex items-start gap-2">
-                <span className="h-1.5 w-1.5 rounded-full bg-indigo-400 mt-1.5 flex-shrink-0" />
-                Review and reorder questions in the Question Builder
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="h-1.5 w-1.5 rounded-full bg-indigo-400 mt-1.5 flex-shrink-0" />
-                Fill in any <code className="text-xs bg-gray-100 px-1 rounded">cta_url</code> values in the tool settings
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="h-1.5 w-1.5 rounded-full bg-indigo-400 mt-1.5 flex-shrink-0" />
-                Preview the quiz with the public link before sharing
-              </li>
-            </ul>
-            <div className="pt-2 flex gap-3">
-              <button
-                onClick={() => router.push(`/admin/tools/${createdId}/questions`)}
-                className="flex-1 bg-indigo-600 text-white py-2.5 rounded-xl text-sm font-semibold hover:bg-indigo-700 transition-colors"
+            <p className="text-sm font-medium text-gray-700">Next: preview, then publish.</p>
+            <div className="grid gap-2 sm:grid-cols-3">
+              <a
+                href={`/t/${created.slug}?preview=1`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center justify-center gap-1.5 border border-gray-200 py-2.5 rounded-xl text-sm text-gray-700 hover:border-indigo-300 hover:text-indigo-600"
               >
-                Open Question Builder →
+                <Eye size={15} /> Preview quiz
+              </a>
+              <button
+                onClick={() => router.push(`/admin/tools/${created.id}/questions`)}
+                className="border border-gray-200 py-2.5 rounded-xl text-sm text-gray-700 hover:border-indigo-300 hover:text-indigo-600"
+              >
+                Edit questions
               </button>
               <button
-                onClick={() => router.push('/admin')}
-                className="px-4 py-2.5 text-sm text-gray-500 border border-gray-200 rounded-xl hover:bg-gray-50 transition-colors"
+                onClick={() => router.push(`/admin/tools/${created.id}/settings`)}
+                className="inline-flex items-center justify-center gap-1.5 bg-indigo-600 text-white py-2.5 rounded-xl text-sm font-semibold hover:bg-indigo-700"
               >
-                Dashboard
+                <Settings size={15} /> Settings &amp; Publish
               </button>
             </div>
           </div>
@@ -731,19 +749,17 @@ export default function ImportToolPage() {
 
 function StepIndicator({ current }: { current: WizardStep }) {
   const steps = [
-    { key: 'input',      label: '1. Source'  },
-    { key: 'review',     label: '2. Review'  },
-    { key: 'done',       label: '3. Done'    },
+    { key: 'input',  label: '1. Source' },
+    { key: 'review', label: '2. Review & Test' },
+    { key: 'done',   label: '3. Saved as Draft' },
   ];
 
-  const idx = current === 'generating' ? 0
-    : current === 'input'    ? 0
-    : current === 'review'   ? 1
-    : current === 'saving'   ? 1
+  const idx = current === 'generating' || current === 'input' ? 0
+    : current === 'review' || current === 'saving' ? 1
     : 2;
 
   return (
-    <div className="flex items-center gap-0 mt-5">
+    <div className="flex items-center gap-0 mt-5 flex-wrap">
       {steps.map((s, i) => (
         <div key={s.key} className="flex items-center">
           <div className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1 rounded-full ${

@@ -4,8 +4,8 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { Question, Tool } from '@/lib/supabase';
 import { toast } from 'sonner';
-import { Plus, Trash2, GripVertical, ExternalLink, ArrowLeft, Users, Settings } from 'lucide-react';
-import { getOptionLabel } from '@/lib/scoring';
+import { Plus, Trash2, GripVertical, ExternalLink, ArrowLeft, Users, Settings, Pencil } from 'lucide-react';
+import { getOptionLabel, isOptionObject } from '@/lib/scoring';
 import type { QuestionOption } from '@/lib/supabase';
 import TestOutcomeMapping from '@/components/TestOutcomeMapping';
 
@@ -78,6 +78,33 @@ export default function QuestionsPage() {
   const [addingNew, setAddingNew] = useState(false);
   const [newQ, setNewQ]         = useState<NewQuestion>(EMPTY_NEW);
   const [saving, setSaving]     = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  function startEdit(q: Question) {
+    const opts = (q.options as QuestionOption[] | null) ?? [];
+    const hasObjects = opts.some(isOptionObject);
+    setNewQ({
+      label:          q.label,
+      variable_name:  q.variable_name,
+      varNameEdited:  true,
+      field_type:     q.field_type as FieldTypeValue,
+      options:        hasObjects ? '' : opts.map(getOptionLabel).join('\n'),
+      optionsJson:    hasObjects ? JSON.stringify(opts, null, 2) : '',
+      useJsonOptions: hasObjects,
+      required:       q.required,
+      scoring_key:    q.scoring_key ?? '',
+      category:       q.category ?? '',
+    });
+    setEditingId(q.id);
+    setAddingNew(true);
+    setTimeout(() => document.getElementById('question-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 0);
+  }
+
+  function cancelForm() {
+    setAddingNew(false);
+    setEditingId(null);
+    setNewQ(EMPTY_NEW);
+  }
 
   const needsScoringFields =
     tool?.result_strategy === 'structured_outcome' ||
@@ -134,8 +161,8 @@ export default function QuestionsPage() {
       }
     }
 
-    const res = await fetch(`/api/admin/tools/${id}/questions`, {
-      method: 'POST',
+    const res = await fetch(editingId ? `/api/admin/tools/${id}/questions/${editingId}` : `/api/admin/tools/${id}/questions`, {
+      method: editingId ? 'PATCH' : 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         label:        newQ.label,
@@ -150,12 +177,11 @@ export default function QuestionsPage() {
     const json = await res.json().catch(() => ({})) as { error?: string };
     setSaving(false);
     if (!res.ok) {
-      toast.error(json.error ?? 'Failed to add question');
+      toast.error(json.error ?? (editingId ? 'Failed to update question' : 'Failed to add question'));
       return;
     }
-    toast.success('Question added');
-    setNewQ(EMPTY_NEW);
-    setAddingNew(false);
+    toast.success(editingId ? 'Question updated' : 'Question added');
+    cancelForm();
     load();
   }
 
@@ -193,7 +219,7 @@ export default function QuestionsPage() {
       </Link>
 
       {/* Header */}
-      <div className="flex items-start justify-between mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">
             {loading ? 'Loading…' : tool?.title}
@@ -221,7 +247,7 @@ export default function QuestionsPage() {
                 <Users size={13} /> Submissions
               </Link>
               <Link
-                href={`/t/${tool.slug}`}
+                href={`/t/${tool.slug}?preview=1`}
                 target="_blank"
                 className="inline-flex items-center gap-1 text-xs border border-gray-200 rounded-lg px-3 py-1.5 text-gray-500 hover:text-indigo-600 transition-colors"
               >
@@ -256,8 +282,8 @@ export default function QuestionsPage() {
               >▼</button>
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-gray-800">{q.label}</p>
-              <p className="text-xs text-gray-400 mt-0.5">
+              <p className="text-sm font-medium text-gray-800 break-words">{q.label}</p>
+              <p className="text-xs text-gray-400 mt-0.5 break-words">
                 {q.variable_name && (
                   <span className="font-mono text-indigo-500">{`{{${q.variable_name}}}`}</span>
                 )}
@@ -269,7 +295,15 @@ export default function QuestionsPage() {
               </p>
             </div>
             <button
+              onClick={() => startEdit(q)}
+              aria-label={`Edit question ${i + 1}`}
+              className="text-gray-300 hover:text-indigo-500 transition-colors mt-0.5"
+            >
+              <Pencil size={15} />
+            </button>
+            <button
               onClick={() => deleteQuestion(q.id)}
+              aria-label={`Delete question ${i + 1}`}
               className="text-red-300 hover:text-red-500 transition-colors mt-0.5"
             >
               <Trash2 size={15} />
@@ -287,7 +321,12 @@ export default function QuestionsPage() {
           <Plus size={16} /> Add Question
         </button>
       ) : (
-        <div className="bg-white rounded-xl border border-indigo-200 p-5 space-y-4">
+        <div id="question-form" className="bg-white rounded-xl border border-indigo-200 p-5 space-y-4">
+          {editingId && (
+            <p className="text-xs text-indigo-600 font-medium">
+              Editing question — existing submissions are stored by question and option text, so rewording affects how old answers are matched in re-scoring.
+            </p>
+          )}
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Question *</label>
             <input
@@ -414,10 +453,10 @@ export default function QuestionsPage() {
               disabled={saving}
               className="flex-1 bg-indigo-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-60 transition-colors"
             >
-              {saving ? 'Saving…' : 'Save Question'}
+              {saving ? 'Saving…' : editingId ? 'Save Changes' : 'Save Question'}
             </button>
             <button
-              onClick={() => { setAddingNew(false); setNewQ(EMPTY_NEW); }}
+              onClick={cancelForm}
               className="px-4 py-2 text-sm text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
             >
               Cancel
@@ -433,6 +472,7 @@ export default function QuestionsPage() {
             scoringConfig={tool.scoring_config}
             resultConfig={tool.result_config}
             resultStrategy={tool.result_strategy}
+            toolId={tool.id}
           />
         </div>
       )}

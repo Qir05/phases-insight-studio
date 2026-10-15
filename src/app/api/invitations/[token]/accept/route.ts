@@ -38,6 +38,27 @@ export async function POST(
     );
   }
 
+  // Claim the invitation first (conditional update) so two concurrent accepts
+  // cannot both proceed. Released again below if account creation fails.
+  const claimedAt = new Date().toISOString();
+  const { data: claimed, error: claimErr } = await db
+    .from('invitations')
+    .update({ accepted_at: claimedAt })
+    .eq('id', invite.id)
+    .is('accepted_at', null)
+    .select('id')
+    .maybeSingle();
+
+  if (claimErr || !claimed) {
+    return NextResponse.json(
+      { error: 'Invitation not found or has expired.' },
+      { status: 404 }
+    );
+  }
+
+  const release = () =>
+    db.from('invitations').update({ accepted_at: null }).eq('id', invite.id).eq('accepted_at', claimedAt);
+
   // Create Supabase auth user
   const { data: authData, error: authErr } = await db.auth.admin.createUser({
     email:         invite.email,
@@ -46,9 +67,13 @@ export async function POST(
   });
 
   if (authErr || !authData.user) {
-    const msg    = authErr?.message ?? 'Failed to create account.';
-    const status = msg.toLowerCase().includes('already') ? 409 : 500;
-    return NextResponse.json({ error: msg }, { status });
+    await release();
+    const exists = (authErr?.message ?? '').toLowerCase().includes('already');
+    console.error('[invite accept] createUser failed:', authErr?.message);
+    return NextResponse.json(
+      { error: exists ? 'An account with this email already exists. Try signing in instead.' : 'Failed to create account.' },
+      { status: exists ? 409 : 500 }
+    );
   }
 
   // Resolve final full_name: prefer what the user submitted, fall back to invitation's
@@ -67,17 +92,12 @@ export async function POST(
 
   if (profileErr) {
     await db.auth.admin.deleteUser(authData.user.id);
+    await release();
     return NextResponse.json(
       { error: 'Failed to create profile. Please contact your administrator.' },
       { status: 500 }
     );
   }
-
-  // Mark invitation accepted
-  await db
-    .from('invitations')
-    .update({ accepted_at: new Date().toISOString() })
-    .eq('id', invite.id);
 
   return NextResponse.json({ success: true });
 }
