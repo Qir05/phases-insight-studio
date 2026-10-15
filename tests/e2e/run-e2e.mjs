@@ -476,6 +476,19 @@ async function runScenarios(browser) {
     assert(text.includes('Track symptoms by body system.'), 'configured recommendation missing');
   });
 
+  await check('7.P admin preview of a PUBLISHED tool is non-persistent (no submission, no email required)', async () => {
+    const before = (await db()).submissions.length;
+    await admin.goto(`${APP}/t/bendy-menopause-type-quiz-e2e?preview=1`);
+    await admin.getByText('Admin preview.').waitFor();
+    await answerQuiz(admin, 'BBBBBBB');
+    await admin.getByText('Admin preview result.').waitFor();
+    await admin.getByRole('heading', { name: 'Histamine + Inflammatory Reactivity Pattern' }).waitFor();
+    eq((await db()).submissions.length, before, 'submission count changed');
+    // the public (non-admin) visitor with ?preview=1 still gets the normal live quiz
+    const r = await api('/api/tools/bendy-menopause-type-quiz-e2e?preview=1');
+    eq(r.json.preview, false, 'anonymous preview flag');
+  });
+
   for (const [L, title] of [['A', 'Musculoskeletal + Hypermobility Pattern'], ['B', 'Histamine + Inflammatory Reactivity Pattern'], ['C', 'Dysautonomia + Autonomic Regulation Pattern']]) {
     await check(`7.${L} Bendy all-${L} → ${title}`, async () => {
       const qs = (await db()).questions.filter((q) => q.tool_id === IDS.bendy).sort((a, b) => a.order_index - b.order_index);
@@ -613,7 +626,7 @@ async function runScenarios(browser) {
   ]) {
     await check(`10.2 admin ${name} page has no horizontal overflow on mobile`, async () => {
       await mAdmin.goto(`${APP}${url}`);
-      await mAdmin.getByText(ready, { exact: true }).first().waitFor();
+      await mAdmin.locator('main').getByText(ready, { exact: true }).first().waitFor();
       await mAdmin.waitForTimeout(500);
       await mAdmin.screenshot({ path: path.join(OUT, `mobile-admin-${name}.png`), fullPage: true });
       const ok = await noHorizontalOverflow(mAdmin);
@@ -629,10 +642,148 @@ async function runScenarios(browser) {
     await admin.getByText('Tool Settings').waitFor();
     await admin.screenshot({ path: path.join(OUT, 'desktop-settings.png'), fullPage: true });
     await admin.goto(`${APP}/admin`);
-    await admin.getByText('Dashboard', { exact: true }).first().waitFor();
+    await admin.getByRole('heading', { name: 'Dashboard', exact: true }).waitFor();
     await admin.screenshot({ path: path.join(OUT, 'desktop-dashboard.png'), fullPage: true });
   });
 
+  console.log('\n[11] Invalid tool ids');
+  for (const [label, id] of [['unknown uuid', '00000000-0000-4000-8000-000000000000'], ['malformed id', 'not-a-real-id']]) {
+    for (const sub of ['settings', 'questions', 'submissions']) {
+      await check(`11 ${sub} with ${label} shows a not-found state, not an editable form`, async () => {
+        await admin.goto(`${APP}/admin/tools/${id}/${sub}`);
+        await admin.getByRole('heading', { name: 'Tool not found' }).waitFor();
+        eq(await admin.locator('main input, main textarea, main select').count(), 0, 'form fields rendered');
+        assert(await admin.getByRole('link', { name: /Back to Dashboard/ }).isVisible(), 'no way back');
+      });
+    }
+  }
+  await check('11 other-workspace tool shows a no-access state for a provider admin', async () => {
+    const { context, page } = await login(browser, 'provider-b@e2e.test');
+    await page.goto(`${APP}/admin/tools/${IDS.bendy}/settings`);
+    await page.getByRole('heading', { name: /don.t have access/ }).waitFor();
+    eq(await page.locator('main input, main textarea').count(), 0, 'form fields rendered');
+    await context.close();
+  });
+
+  console.log('\n[12] Responsive layout — 390 / 768 / 1024 / 1440');
+  const validImportJson = JSON.stringify({
+    title: 'Responsive Check Quiz', slug: 'responsive-check-quiz', result_strategy: 'structured_outcome', scoring_provenance: 'source',
+    scoring_config: { type: 'category', categories: ['alpha_type', 'beta_type'] },
+    result_config: { outcomes: [
+      { id: 'alpha_type', title: 'Alpha Type with a deliberately long outcome title to test wrapping', description: 'd', match: { top_category: 'alpha_type' }, cta_text: 'Book', cta_url: 'https://example.com' },
+      { id: 'beta_type', title: 'Beta Type', description: 'd', match: { top_category: 'beta_type' } },
+    ] },
+    questions: [
+      { label: 'A fairly long question label that should wrap gracefully on a narrow phone screen without overflowing?', options: [{ label: '(A) A long option label that also needs to wrap on small screens nicely', value: 'A', category: 'alpha_type' }, { label: '(B) Short', value: 'B', category: 'beta_type' }] },
+      { label: 'Second question?', options: [{ label: 'Yes', category: 'alpha_type' }, { label: 'No', category: 'beta_type' }] },
+    ],
+  });
+
+  for (const width of [390, 768, 1024, 1440]) {
+    const { context, page } = await login(browser, 'super@e2e.test', { width, height: 900 });
+    page.setDefaultTimeout(30_000);
+    const shot = (name) => page.screenshot({ path: path.join(OUT, `responsive-${width}-${name}.png`), fullPage: true });
+
+    await check(`12.${width} navigation: ${width < 1024 ? 'menu button + accessible slide-in menu' : 'static sidebar'}`, async () => {
+      await page.goto(`${APP}/admin`);
+      await page.getByRole('heading', { name: 'Dashboard', exact: true }).waitFor();
+      const menuBtn = page.getByRole('button', { name: 'Open menu' });
+      const aside = page.locator('aside');
+      if (width < 1024) {
+        assert(await menuBtn.isVisible(), 'menu button not visible');
+        assert(!(await aside.isVisible()), 'desktop sidebar still visible');
+        eq(await menuBtn.getAttribute('aria-expanded'), 'false', 'aria-expanded closed');
+        await menuBtn.click();
+        const dialog = page.getByRole('dialog', { name: 'Admin navigation' });
+        await dialog.waitFor();
+        eq(await menuBtn.getAttribute('aria-expanded'), 'true', 'aria-expanded open');
+        const focused = await page.evaluate(() => document.activeElement?.getAttribute('aria-label'));
+        eq(focused, 'Close menu', 'focus moved into the menu');
+        for (const name of ['Dashboard', 'New Tool', 'Import Quiz', 'Workspaces', 'Users']) {
+          assert(await dialog.getByRole('link', { name }).isVisible(), `menu link ${name} not visible`);
+        }
+        await shot('menu-open');
+        await page.keyboard.press('Escape');
+        await dialog.waitFor({ state: 'detached' });
+        const back = await page.evaluate(() => document.activeElement?.getAttribute('aria-label'));
+        eq(back, 'Open menu', 'focus returned to menu button');
+        await menuBtn.click();
+        await dialog.getByRole('link', { name: 'Import Quiz' }).click();
+        await page.waitForURL(/\/admin\/tools\/import/);
+        await dialog.waitFor({ state: 'detached' });
+      } else {
+        assert(await aside.isVisible(), 'sidebar not visible');
+        assert(!(await menuBtn.isVisible()), 'menu button visible on desktop');
+      }
+    });
+
+    const pages = [
+      ['dashboard', async () => { await page.goto(`${APP}/admin`); await page.getByText('Total Tools').waitFor(); }],
+      ['settings', async () => { await page.goto(`${APP}/admin/tools/${importedId}/settings`); await page.getByText('Tool Settings').waitFor(); }],
+      ['migration-assistant', async () => {
+        await page.goto(`${APP}/admin/tools/${IDS.bendy}/settings`);
+        await page.getByRole('button', { name: /Open Migration Assistant/ }).click();
+        await page.getByRole('button', { name: 'Edit current mappings by hand' }).click();
+        await page.getByText('1. Answer → outcome mapping').waitFor();
+      }],
+      ['questions', async () => {
+        await page.goto(`${APP}/admin/tools/${importedId}/questions`);
+        await page.getByLabel('Edit question 1').click();
+        await page.locator('#question-form').waitFor();
+      }],
+      ['import-review', async () => {
+        await page.goto(`${APP}/admin/tools/import`);
+        await page.getByRole('button', { name: /Paste JSON Config/ }).click();
+        await page.locator('textarea').first().fill(validImportJson);
+        await page.getByRole('button', { name: /Load JSON Draft/ }).click();
+        await page.getByRole('heading', { name: 'Responsive Check Quiz' }).waitFor();
+        await page.getByRole('button', { name: /Test Outcome Mapping/ }).click();
+      }],
+      ['public-quiz', async () => { await page.goto(`${APP}/t/bendy-menopause-type-quiz-e2e`); await page.locator('label', { hasText: '(A)' }).first().waitFor(); }],
+      ['public-result', async () => { await page.goto(`${APP}/r/${resultToken}`); await page.getByRole('heading', { name: 'Afternoon Slump Type' }).waitFor(); }],
+    ];
+    for (const [name, open] of pages) {
+      await check(`12.${width} ${name}: no overflow, clipped or overlapping controls`, async () => {
+        await open();
+        await page.waitForTimeout(300);
+        await shot(name);
+        const issues = await page.evaluate(layoutIssues);
+        assert(issues.length === 0, issues.slice(0, 6).join(' | '));
+      });
+    }
+    await context.close();
+  }
+}
+
+/** Runs in the page: horizontal overflow, controls outside the viewport, overlapping controls. */
+function layoutIssues() {
+  // Measure the layout itself: at scrollTop 0 the sticky top bar can't sit over scrolled content.
+  window.scrollTo(0, 0);
+  const vw = window.innerWidth;
+  const issues = [];
+  if (document.documentElement.scrollWidth > vw + 1) issues.push(`page scrollWidth ${document.documentElement.scrollWidth} > ${vw}`);
+  const label = (el) => (el.getAttribute('aria-label') || el.textContent || el.getAttribute('name') || el.getAttribute('placeholder') || el.tagName).trim().replace(/\s+/g, ' ').slice(0, 40);
+  const els = Array.from(document.querySelectorAll('a[href], button, input, select, textarea, [role="switch"]')).filter((el) => {
+    const r = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none' && cs.opacity !== '0' && !el.closest('[aria-hidden="true"]');
+  });
+  const rects = els.map((el) => ({ el, r: el.getBoundingClientRect() }));
+  for (const { el, r } of rects) {
+    if (r.left < -1 || r.right > vw + 1) issues.push(`clipped "${label(el)}" x=${Math.round(r.left)}..${Math.round(r.right)}`);
+  }
+  for (let i = 0; i < rects.length; i++) {
+    for (let j = i + 1; j < rects.length; j++) {
+      const a = rects[i]; const b = rects[j];
+      if (a.el.contains(b.el) || b.el.contains(a.el)) continue;
+      // a checkbox/radio inside the same label as the other element is one control
+      if (a.el.closest('label') && a.el.closest('label') === b.el.closest('label')) continue;
+      const w = Math.min(a.r.right, b.r.right) - Math.max(a.r.left, b.r.left);
+      const h = Math.min(a.r.bottom, b.r.bottom) - Math.max(a.r.top, b.r.top);
+      if (w > 2 && h > 2) issues.push(`overlap "${label(a.el)}" × "${label(b.el)}" (${Math.round(w)}×${Math.round(h)}px)`);
+    }
+  }
+  return issues;
 }
 
 let backendState;

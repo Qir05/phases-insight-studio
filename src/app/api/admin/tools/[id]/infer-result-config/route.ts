@@ -4,7 +4,7 @@ import { getServiceClient } from '@/lib/supabase';
 import type { Question, QuestionOption, ScoringConfig, ResultConfig } from '@/lib/supabase';
 import { getOptionLabel, getOptionValue, getOptionCategory, isOptionObject } from '@/lib/scoring';
 import { loadToolForAdmin } from '@/lib/toolAccess';
-import { generateJson, GroqConfigError } from '@/lib/groq';
+import { generateJson, describeAiError } from '@/lib/groq';
 import { rateLimit } from '@/lib/rateLimit';
 import { validateResultConfig } from '@/lib/resultConfigValidation';
 
@@ -110,9 +110,9 @@ export async function POST(
   try {
     ({ data, raw } = await generateJson(SYSTEM_PROMPT, buildPrompt(tool.title, questions), 4000));
   } catch (err) {
-    if (err instanceof GroqConfigError) return NextResponse.json({ error: err.message }, { status: 500 });
     console.error('[infer-result-config] Groq error:', err);
-    return NextResponse.json({ error: 'AI generation failed. Please try again.' }, { status: 502 });
+    const { message, status } = describeAiError(err);
+    return NextResponse.json({ error: message }, { status });
   }
 
   if (!data) {

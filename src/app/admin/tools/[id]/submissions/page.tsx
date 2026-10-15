@@ -4,6 +4,7 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { Submission, Tool } from '@/lib/supabase';
 import { ExternalLink, ChevronDown, ChevronUp, RefreshCw, ArrowLeft, List } from 'lucide-react';
+import ToolNotFound from '@/components/ToolNotFound';
 
 const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? '';
 
@@ -40,6 +41,7 @@ export default function SubmissionsPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notFound, setNotFound] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const load = useCallback(async (isRefresh = false) => {
@@ -53,7 +55,8 @@ export default function SubmissionsPage() {
       const toolJson = await toolRes.json() as { tool?: Tool; error?: string };
 
       if (!toolRes.ok) {
-        setError(toolJson.error ?? 'Failed to load tool');
+        if (toolRes.status === 404 || toolRes.status === 403) setNotFound(toolRes.status);
+        else setError(toolJson.error ?? 'Failed to load tool');
         return;
       }
       setTool(toolJson.tool ?? null);
@@ -78,6 +81,8 @@ export default function SubmissionsPage() {
   }, [id]);
 
   useEffect(() => { load(); }, [load]);
+
+  if (notFound) return <ToolNotFound status={notFound} />;
 
   return (
     <div className="max-w-3xl">

@@ -124,6 +124,8 @@ export default function PublicQuizPage() {
           toast.success('Preview: answers are valid. Live respondents would now be redirected.');
           return;
         }
+        const aiFailed = json.generation_status === 'failed';
+        if (aiFailed) toast.error(`AI personalisation failed — ${json.generation_error ?? 'unknown error'}`);
         sessionStorage.setItem(`result_${slug}`, JSON.stringify({
           mode:              json.mode,
           outcome:           json.outcome ?? undefined,
@@ -134,6 +136,10 @@ export default function PublicQuizPage() {
           toolTitle:         tool.title,
           providerName:      tool.provider_name ?? null,
           preview:           true,
+          previewWarning:    aiFailed
+            ? `AI personalisation did not run (${json.generation_error ?? 'unknown error'}). Respondents would currently see only the scored outcome below.`
+            : null,
+          previewModel:      json.model_used ?? null,
         }));
         router.push(`/t/${slug}/result`);
         return;
@@ -305,7 +311,7 @@ export default function PublicQuizPage() {
                   </p>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <ContactField label="First Name" value={contact.firstName} onChange={setFirstName} />
                   <ContactField label="Last Name"  value={contact.lastName}  onChange={setLastName} />
                 </div>

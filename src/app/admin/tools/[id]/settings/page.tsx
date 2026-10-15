@@ -10,6 +10,7 @@ import { validateResultConfig } from '@/lib/resultConfigValidation';
 import { getOptionCategory, getOptionLabel, getOptionValue } from '@/lib/scoring';
 import PublishControls from '@/components/PublishControls';
 import TestOutcomeMapping from '@/components/TestOutcomeMapping';
+import ToolNotFound from '@/components/ToolNotFound';
 
 type ToolMode = 'ai_result' | 'smartform_redirect';
 
@@ -123,6 +124,7 @@ export default function ToolSettingsPage() {
   const [form, setForm]         = useState<FormState>(EMPTY_FORM);
 
   const [saveErrors, setSaveErrors] = useState<string[]>([]);
+  const [loadStatus, setLoadStatus] = useState<number | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
   // ── Migration Assistant (draft result config inferred from existing questions) ──
@@ -151,10 +153,11 @@ export default function ToolSettingsPage() {
     setQuestions(Array.isArray(qJson.questions) ? qJson.questions : []);
 
     if (!res.ok || !json.tool) {
-      toast.error(json.error ?? 'Failed to load tool');
+      setLoadStatus(res.status === 403 ? 403 : 404);
       setLoading(false);
       return;
     }
+    setLoadStatus(200);
     const t = json.tool;
     setTool(t);
     setForm({
@@ -390,6 +393,10 @@ export default function ToolSettingsPage() {
     toast.success('Settings saved');
     setRefreshKey((k) => k + 1);
     load();
+  }
+
+  if (!loading && loadStatus !== 200) {
+    return <ToolNotFound status={loadStatus ?? 404} />;
   }
 
   if (loading) {

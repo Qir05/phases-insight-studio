@@ -73,6 +73,14 @@ export async function POST(
     );
   }
 
+  // ai_generated has no result without the AI text — report the failure as an error, never as a result.
+  if (result.mode === 'ai_result' && result.generationStatus === 'failed') {
+    return NextResponse.json(
+      { error: `AI generation failed: ${result.generationError}`, stage: 'ai', model_used: result.modelUsed },
+      { status: 503 }
+    );
+  }
+
   return NextResponse.json({
     mode:              tool.result_strategy === 'hybrid_ai_with_outcome' ? 'hybrid_ai_with_outcome' : result.mode,
     skipped_ai:        !runAi,

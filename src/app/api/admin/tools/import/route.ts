@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth';
-import { generateJson, GroqConfigError } from '@/lib/groq';
+import { generateJson, describeAiError } from '@/lib/groq';
 import { normalizeImportConfig } from '@/lib/importConfig';
 import { rateLimit } from '@/lib/rateLimit';
 
@@ -121,11 +121,9 @@ export async function POST(req: NextRequest) {
   try {
     ({ data, raw } = await generateJson(SYSTEM_PROMPT, buildUserPrompt(label, text), 8000));
   } catch (err) {
-    if (err instanceof GroqConfigError) {
-      return NextResponse.json({ error: err.message }, { status: 500 });
-    }
     console.error('[import] Groq error:', err);
-    return NextResponse.json({ error: 'AI generation failed. Please try again.' }, { status: 502 });
+    const { message, status } = describeAiError(err);
+    return NextResponse.json({ error: message }, { status });
   }
 
   if (!data) {

@@ -158,78 +158,70 @@ export default function AdminDashboard() {
           {tools.map((tool) => (
             <div
               key={tool.id}
-              className="bg-white rounded-2xl border border-gray-100 p-5 hover:border-gray-200 transition-colors"
+              className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5 hover:border-gray-200 transition-colors"
             >
-              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4">
-                {/* Info */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h2 className="font-semibold text-gray-900">{tool.title}</h2>
-                    {tool.provider_name && (
-                      <span className="text-xs bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-full">
-                        {tool.provider_name}
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-sm text-gray-400 mt-0.5 truncate">
-                    /t/{tool.slug}
-                    {tool.description && ` · ${tool.description}`}
-                  </p>
-                  <ToolBadges tool={tool} />
-                  <div className="flex items-center gap-3 mt-2">
-                    <span className="text-xs text-gray-400">
-                      <span className="font-medium text-gray-600">{qCount(tool)}</span> questions
+              {/* Info */}
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h2 className="font-semibold text-gray-900 break-words min-w-0">{tool.title}</h2>
+                  {tool.provider_name && (
+                    <span className="text-xs bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-full">
+                      {tool.provider_name}
                     </span>
-                    <span className="text-gray-200">·</span>
-                    <span className="text-xs text-gray-400">
-                      <span className="font-medium text-gray-600">{subCount(tool)}</span> submissions
-                    </span>
-                    <span className="text-gray-200">·</span>
-                    <span className="text-xs text-gray-300">
-                      {new Date(tool.created_at).toLocaleDateString()}
-                    </span>
-                  </div>
+                  )}
                 </div>
+                <p className="text-sm text-gray-400 mt-0.5 truncate">
+                  /t/{tool.slug}
+                  {tool.description && ` · ${tool.description}`}
+                </p>
+                <ToolBadges tool={tool} />
+                <div className="flex items-center gap-x-3 gap-y-1 flex-wrap mt-2">
+                  <span className="text-xs text-gray-400">
+                    <span className="font-medium text-gray-600">{qCount(tool)}</span> questions
+                  </span>
+                  <span className="text-gray-200" aria-hidden="true">·</span>
+                  <span className="text-xs text-gray-400">
+                    <span className="font-medium text-gray-600">{subCount(tool)}</span> submissions
+                  </span>
+                  <span className="text-gray-200" aria-hidden="true">·</span>
+                  <span className="text-xs text-gray-400">
+                    {new Date(tool.created_at).toLocaleDateString()}
+                  </span>
+                </div>
+              </div>
 
-                {/* Actions */}
-                <div className="flex items-center gap-1.5 flex-shrink-0 flex-wrap sm:justify-end">
-                  <Link
-                    href={`/t/${tool.slug}${tool.status === 'draft' ? '?preview=1' : ''}`}
-                    target="_blank"
-                    className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-indigo-600 border border-gray-200 rounded-lg px-2.5 py-1.5 transition-colors"
-                  >
-                    <ExternalLink size={12} /> Preview
-                  </Link>
-                  <Link
-                    href={`/admin/tools/${tool.id}/questions`}
-                    className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-indigo-600 border border-gray-200 rounded-lg px-2.5 py-1.5 transition-colors"
-                  >
-                    <List size={12} /> Questions
-                  </Link>
-                  <Link
-                    href={`/admin/tools/${tool.id}/settings`}
-                    className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-indigo-600 border border-gray-200 rounded-lg px-2.5 py-1.5 transition-colors"
-                  >
-                    <Settings size={12} /> Settings
-                  </Link>
-                  <Link
-                    href={`/admin/tools/${tool.id}/submissions`}
-                    className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-indigo-600 border border-gray-200 rounded-lg px-2.5 py-1.5 transition-colors"
-                  >
-                    <Users size={12} /> Submissions
-                    {subCount(tool) > 0 && (
-                      <span className="ml-0.5 bg-indigo-100 text-indigo-700 rounded-full px-1.5 text-[10px] font-semibold">
-                        {subCount(tool)}
-                      </span>
-                    )}
-                  </Link>
-                  <button
-                    onClick={() => deleteTool(tool.id, tool.title)}
-                    className="inline-flex items-center gap-1 text-xs text-red-400 hover:text-red-600 border border-gray-200 rounded-lg px-2.5 py-1.5 transition-colors"
-                  >
-                    <Trash2 size={12} />
-                  </button>
-                </div>
+              {/* Actions — own row so they wrap cleanly at any width */}
+              <div className="flex flex-wrap items-center gap-2 mt-4 pt-4 border-t border-gray-50">
+                <Link
+                  href={`/t/${tool.slug}?preview=1`}
+                  target="_blank"
+                  className={actionClass}
+                >
+                  <ExternalLink size={13} aria-hidden="true" /> Preview
+                </Link>
+                <Link href={`/admin/tools/${tool.id}/questions`} className={actionClass}>
+                  <List size={13} aria-hidden="true" /> Questions
+                </Link>
+                <Link href={`/admin/tools/${tool.id}/settings`} className={actionClass}>
+                  <Settings size={13} aria-hidden="true" /> Settings
+                </Link>
+                <Link href={`/admin/tools/${tool.id}/submissions`} className={actionClass}>
+                  <Users size={13} aria-hidden="true" /> Submissions
+                  {subCount(tool) > 0 && (
+                    <span className="ml-0.5 bg-indigo-100 text-indigo-700 rounded-full px-1.5 text-[10px] font-semibold">
+                      {subCount(tool)}
+                    </span>
+                  )}
+                </Link>
+                <button
+                  type="button"
+                  onClick={() => deleteTool(tool.id, tool.title)}
+                  aria-label={`Delete ${tool.title}`}
+                  title="Delete tool"
+                  className="ml-auto inline-flex items-center justify-center w-9 h-9 text-red-400 hover:text-red-600 hover:bg-red-50 border border-gray-200 rounded-lg transition-colors"
+                >
+                  <Trash2 size={14} aria-hidden="true" />
+                </button>
               </div>
             </div>
           ))}
@@ -238,3 +230,6 @@ export default function AdminDashboard() {
     </div>
   );
 }
+
+const actionClass =
+  'inline-flex items-center gap-1.5 text-xs font-medium text-gray-600 hover:text-indigo-600 hover:border-indigo-200 border border-gray-200 rounded-lg px-3 h-9 transition-colors whitespace-nowrap';

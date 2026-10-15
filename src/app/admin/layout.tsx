@@ -12,9 +12,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   if (!profile || !profile.is_active) redirect('/login');
 
   return (
-    <div className="flex min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gray-50 lg:flex">
       <AdminSidebar />
-      <main className="flex-1 p-8 overflow-y-auto">{children}</main>
+      <main className="flex-1 min-w-0 px-4 py-6 sm:px-6 lg:p-8">{children}</main>
     </div>
   );
 }

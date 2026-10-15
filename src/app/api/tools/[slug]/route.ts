@@ -33,15 +33,19 @@ export async function GET(
   if (!tool) return NextResponse.json({ error: 'Tool not found' }, { status: 404 });
 
   const status = toolStatus(tool);
+
+  // ?preview=1 from a signed-in admin who can access the tool → non-persistent
+  // preview mode (submissions go to the admin preview endpoint: nothing saved,
+  // no webhooks) — for drafts AND published tools. Anyone else gets the normal
+  // public behaviour, and drafts stay invisible to them.
   let preview = false;
-  if (status !== 'published') {
-    const wantsPreview = req.nextUrl.searchParams.get('preview') === '1';
-    const user = wantsPreview ? await getSessionUser() : null;
+  if (req.nextUrl.searchParams.get('preview') === '1') {
+    const user = await getSessionUser();
     const profile = user ? await getProfile(user.id) : null;
-    if (!profile || !profile.is_active || !canAccessTool(profile.role, profile.workspace_id, tool.workspace_id)) {
-      return NextResponse.json({ error: 'Tool not found' }, { status: 404 });
-    }
-    preview = true;
+    preview = !!profile && profile.is_active && canAccessTool(profile.role, profile.workspace_id, tool.workspace_id);
+  }
+  if (status !== 'published' && !preview) {
+    return NextResponse.json({ error: 'Tool not found' }, { status: 404 });
   }
 
   const { data: questions, error: qErr } = await db

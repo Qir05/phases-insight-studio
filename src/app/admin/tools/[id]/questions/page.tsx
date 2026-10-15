@@ -8,6 +8,7 @@ import { Plus, Trash2, GripVertical, ExternalLink, ArrowLeft, Users, Settings, P
 import { getOptionLabel, isOptionObject } from '@/lib/scoring';
 import type { QuestionOption } from '@/lib/supabase';
 import TestOutcomeMapping from '@/components/TestOutcomeMapping';
+import ToolNotFound from '@/components/ToolNotFound';
 
 const FIELD_TYPES = [
   { value: 'text',      label: 'Text input' },
@@ -79,6 +80,7 @@ export default function QuestionsPage() {
   const [newQ, setNewQ]         = useState<NewQuestion>(EMPTY_NEW);
   const [saving, setSaving]     = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [loadStatus, setLoadStatus] = useState<number | null>(null);
 
   function startEdit(q: Question) {
     const opts = (q.options as QuestionOption[] | null) ?? [];
@@ -115,8 +117,14 @@ export default function QuestionsPage() {
       fetch(`/api/admin/tools/${id}`),
       fetch(`/api/admin/tools/${id}/questions`),
     ]);
-    const toolJson = await toolRes.json();
-    const qJson    = await qRes.json();
+    const toolJson = await toolRes.json().catch(() => ({}));
+    const qJson    = await qRes.json().catch(() => ({}));
+    if (!toolRes.ok || !toolJson.tool) {
+      setLoadStatus(toolRes.status === 403 ? 403 : 404);
+      setLoading(false);
+      return;
+    }
+    setLoadStatus(200);
     setTool(toolJson.tool);
     setQuestions(qJson.questions ?? []);
     setLoading(false);
@@ -207,6 +215,8 @@ export default function QuestionsPage() {
   }
 
   const needsOptions = OPTIONS_TYPES.includes(newQ.field_type as typeof OPTIONS_TYPES[number]);
+
+  if (!loading && loadStatus !== 200) return <ToolNotFound status={loadStatus ?? 404} />;
 
   return (
     <div className="max-w-2xl">
@@ -351,7 +361,7 @@ export default function QuestionsPage() {
             </p>
           </div>
 
-          <div className="flex gap-3">
+          <div className="flex flex-col sm:flex-row gap-3">
             <div className="flex-1">
               <label className="block text-xs font-medium text-gray-600 mb-1">Field type</label>
               <select
@@ -417,7 +427,7 @@ export default function QuestionsPage() {
           {needsScoringFields && (
             <div className="border-t border-gray-100 pt-4 space-y-3">
               <p className="text-xs font-medium text-teal-700">Scoring Fields</p>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-gray-600 mb-1">
                     Scoring Key <span className="text-gray-400">(optional)</span>

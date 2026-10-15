@@ -21,6 +21,8 @@ interface StoredResult {
   toolTitle:          string;
   providerName?:      string | null;
   preview?:           boolean;
+  previewWarning?:    string | null;
+  previewModel?:      string | null;
 }
 
 export default function SessionResultPage() {
@@ -64,6 +66,12 @@ export default function SessionResultPage() {
         {result.preview && (
           <div className="bg-amber-50 border border-amber-200 rounded-2xl px-5 py-3 text-xs text-amber-800">
             <strong>Admin preview result.</strong> This is exactly what a respondent would see, but it was not saved and has no permanent link.
+            {result.previewModel && <span className="block mt-1 text-amber-700/80">Model: {result.previewModel}</span>}
+          </div>
+        )}
+        {result.preview && result.previewWarning && (
+          <div role="alert" className="bg-red-50 border border-red-200 rounded-2xl px-5 py-3 text-xs text-red-700">
+            <strong>Preview failed:</strong> {result.previewWarning}
           </div>
         )}
 

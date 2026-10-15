@@ -64,7 +64,7 @@ export default function PublishControls({
   }
 
   const isLive = data.status === 'published';
-  const previewHref = `/t/${slug}${isLive ? '' : '?preview=1'}`;
+  const previewHref = `/t/${slug}?preview=1`; // admin preview never saves, even for live tools
   const issues = [...data.errors.map((e) => ({ e, kind: 'error' as const })), ...data.warnings.map((e) => ({ e, kind: 'warning' as const }))];
   const visible = showAll ? issues : issues.slice(0, 4);
 

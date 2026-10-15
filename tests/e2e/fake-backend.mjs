@@ -430,7 +430,7 @@ function handleGroq(state, req, res, body) {
 
 function groqReply(res, content) {
   return send(res, 200, {
-    id: `chatcmpl-${randomBytes(6).toString('hex')}`, object: 'chat.completion', created: Math.floor(Date.now() / 1000), model: 'llama-3.3-70b-versatile',
+    id: `chatcmpl-${randomBytes(6).toString('hex')}`, object: 'chat.completion', created: Math.floor(Date.now() / 1000), model: 'openai/gpt-oss-120b',
     choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
     usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
   });
