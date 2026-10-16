@@ -700,7 +700,8 @@ async function runScenarios(browser) {
         const focused = await page.evaluate(() => document.activeElement?.getAttribute('aria-label'));
         eq(focused, 'Close menu', 'focus moved into the menu');
         for (const name of ['Dashboard', 'New Tool', 'Import Quiz', 'Workspaces', 'Users']) {
-          assert(await dialog.getByRole('link', { name }).isVisible(), `menu link ${name} not visible`);
+          // Workspaces/Users appear once the profile has loaded (super admin only)
+          await dialog.getByRole('link', { name }).waitFor({ timeout: 15_000 });
         }
         await shot('menu-open');
         await page.keyboard.press('Escape');

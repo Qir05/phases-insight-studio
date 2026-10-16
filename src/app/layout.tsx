@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import localFont from 'next/font/local';
 import { Toaster } from 'sonner';
 import './globals.css';
@@ -14,9 +14,17 @@ const geistMono = localFont({
   weight: '100 900',
 });
 
+// Icons come from the App Router file conventions in this folder
+// (favicon.ico, icon.png, apple-icon.png) plus manifest.ts — all Phases branding.
 export const metadata: Metadata = {
   title: 'Phases Insight Studio',
   description: 'AI-powered educational wellness assessments by Phases Clinic',
+  applicationName: 'Phases Insight Studio',
+  appleWebApp: { title: 'Phases', capable: true, statusBarStyle: 'default' },
+};
+
+export const viewport: Viewport = {
+  themeColor: '#ffffff',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
